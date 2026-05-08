@@ -40,6 +40,7 @@ private:
     void sendSpinGoal();
     float computeCoverageRatio() const;
     void logGraphState() const;
+    int nodeIdFromIx(int ix) const;
 
     Params params_;
     SaliencyEvaluator saliency_eval_;
@@ -48,11 +49,15 @@ private:
     BNBSelector bnb_selector_;
     SLAMGraphPlanner slam_graph_planner_;
     GraphState graph_;
+    SaliencyState saliency_state_;
     nav_msgs::msg::OccupancyGrid::SharedPtr occupancy_map_;
+    float cached_coverage_ratio_ = 0.5f;
     std::vector<ALCCandidate> candidates_;
     std::optional<ALCCandidate> best_candidate_;
     Pose6f last_lighthouse_pose_;
     bool has_lighthouse_ = false;
+    bool alc_rotation_attempt_active_ = false;
+    bool alc_rotation_observed_loop_closure_ = false;
     rclcpp::Time last_alc_time_{0, 0, RCL_ROS_TIME};
     rclcpp::Time last_map_data_stamp_{0, 0, RCL_ROS_TIME};
 

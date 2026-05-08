@@ -85,6 +85,20 @@ geometry_msgs::msg::Pose parsePoseBlob(sqlite3_stmt* stmt,
     return pose;
 }
 
+std::array<double, 36> parseInformationBlob(sqlite3_stmt* stmt,
+                                            const int column_index) {
+    const void* blob = sqlite3_column_blob(stmt, column_index);
+    const int blob_bytes = sqlite3_column_bytes(stmt, column_index);
+    if (blob == nullptr ||
+        blob_bytes != static_cast<int>(36 * sizeof(double))) {
+        throw std::runtime_error("Unexpected information blob size");
+    }
+
+    std::array<double, 36> information{};
+    std::memcpy(information.data(), blob, sizeof(double) * information.size());
+    return information;
+}
+
 rtabmap_msgs::msg::MapData loadMapDataFromDb(const std::string& db_path,
                                              std::size_t& max_word_count,
                                              int& first_node_id,
@@ -165,18 +179,15 @@ rtabmap_msgs::msg::MapData loadMapDataFromDb(const std::string& db_path,
     {
         Statement stmt(
             db,
-            "SELECT from_id, to_id, type FROM Link ORDER BY from_id, to_id");
+            "SELECT from_id, to_id, type, information_matrix FROM Link "
+            "ORDER BY from_id, to_id");
         while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
             rtabmap_msgs::msg::Link link_msg;
             link_msg.from_id = sqlite3_column_int(stmt.get(), 0);
             link_msg.to_id = sqlite3_column_int(stmt.get(), 1);
             link_msg.type = sqlite3_column_int(stmt.get(), 2);
             link_msg.transform.rotation.w = 1.0;
-            std::fill(link_msg.information.begin(), link_msg.information.end(),
-                      0.0);
-            for (int i = 0; i < 6; ++i) {
-                link_msg.information[static_cast<std::size_t>(i * 6 + i)] = 1.0;
-            }
+            link_msg.information = parseInformationBlob(stmt.get(), 3);
             map_data.graph.links.push_back(std::move(link_msg));
         }
     }

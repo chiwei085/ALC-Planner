@@ -3,8 +3,10 @@
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <rcutils/logging.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -13,6 +15,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "alc_planner/map_utils.hpp"
 
 namespace alc_planner
 {
@@ -50,6 +54,29 @@ std::optional<int> extractWordsRecognized(const rtabmap_msgs::msg::Info& msg) {
     return std::nullopt;
 }
 
+constexpr float kDefaultVariance = 1.0f;
+
+float scalarVarianceFromInformation(const std::array<double, 36>& information) {
+    constexpr int kDiagonalIndices[6] = {0, 7, 14, 21, 28, 35};
+
+    double reciprocal_sum = 0.0;
+    int count = 0;
+    for (const int index : kDiagonalIndices) {
+        const double value = information[static_cast<std::size_t>(index)];
+        if (!std::isfinite(value) || value <= 0.0) {
+            continue;
+        }
+
+        reciprocal_sum += 1.0 / value;
+        ++count;
+    }
+
+    if (count <= 0) {
+        return kDefaultVariance;
+    }
+    return static_cast<float>(reciprocal_sum / static_cast<double>(count));
+}
+
 }  // namespace
 
 ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
@@ -82,21 +109,22 @@ void ALCPlannerNode::onMapData(
 
     ingestNodes(*msg);
     ingestLinks(*msg);
-    saliency_eval_.update(graph_);
+    saliency_eval_.update(graph_, saliency_state_);
     checkLighthouse();
-    candidates_ = candidate_builder_.build(graph_);
+    candidates_ = candidate_builder_.build(graph_, saliency_state_);
     for (auto& candidate : candidates_) {
-        reward_evaluator_.fillRewardUB(candidate, graph_);
+        reward_evaluator_.fillRewardUB(candidate, saliency_state_);
     }
     best_candidate_.reset();
-    if (occupancy_map_ && graph_.robot_node_id >= 0) {
-        best_candidate_ =
-            bnb_selector_.select(candidates_, graph_, *occupancy_map_);
+    if (occupancy_map_ && graph_.robot_ix >= 0) {
+        best_candidate_ = bnb_selector_.select(
+            candidates_, graph_, saliency_state_, *occupancy_map_);
         if (best_candidate_.has_value()) {
+            const int tau_node_id = nodeIdFromIx(best_candidate_->tau_ix);
             RCLCPP_INFO(
                 get_logger(),
                 "[ALCPlanner] BNB best: tau_id=%d reward=%.4f map_dist=%.2f",
-                best_candidate_->tau_id, best_candidate_->reward,
+                tau_node_id, best_candidate_->reward,
                 best_candidate_->map_dist);
         }
     }
@@ -131,20 +159,43 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
             "words-recognized key; S_L normalization may be incorrect.");
     }
 
-    graph_.robot_node_id = msg->ref_id;
+    const auto robot_it = graph_.node_to_ix.find(msg->ref_id);
+    graph_.robot_ix =
+        robot_it != graph_.node_to_ix.end() ? robot_it->second : -1;
     if (msg->loop_closure_id > 0) {
         RCLCPP_INFO(get_logger(), "[ALCPlanner] loop closure detected: id=%d",
                     msg->loop_closure_id);
+    }
+
+    if (alc_rotation_attempt_active_ && msg->loop_closure_id > 0 &&
+        slam_graph_planner_.state() == PlannerState::ROTATING) {
+        alc_rotation_observed_loop_closure_ = true;
     }
 }
 
 void ALCPlannerNode::onMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
     occupancy_map_ = msg;
+    cached_coverage_ratio_ = estimateCoverageRatio(occupancy_map_.get());
 }
 
 void ALCPlannerNode::ingestNodes(const rtabmap_msgs::msg::MapData& msg) {
+    const auto ensureIx = [this](const int node_id) {
+        const auto it = graph_.node_to_ix.find(node_id);
+        if (it != graph_.node_to_ix.end()) {
+            return it->second;
+        }
+
+        const int ix = static_cast<int>(graph_.keyframes.size());
+        graph_.node_to_ix[node_id] = ix;
+        graph_.ix_to_node.push_back(node_id);
+        graph_.keyframes.push_back({});
+        graph_.adj.push_back({});
+        return ix;
+    };
+
     for (const auto& node_msg : msg.nodes) {
-        auto& keyframe = graph_.keyframes[node_msg.id];
+        const int ix = ensureIx(node_msg.id);
+        Keyframe& keyframe = graph_.keyframes[static_cast<std::size_t>(ix)];
         keyframe.node_id = node_msg.id;
         keyframe.pose = toPose6f(node_msg.pose);
         keyframe.word_ids = node_msg.word_id_keys;
@@ -154,33 +205,42 @@ void ALCPlannerNode::ingestNodes(const rtabmap_msgs::msg::MapData& msg) {
         std::min(msg.graph.poses_id.size(), msg.graph.poses.size());
     for (std::size_t i = 0; i < pose_count; ++i) {
         const int node_id = msg.graph.poses_id[i];
-        auto& keyframe = graph_.keyframes[node_id];
+        const int ix = ensureIx(node_id);
+        Keyframe& keyframe = graph_.keyframes[static_cast<std::size_t>(ix)];
         keyframe.node_id = node_id;
         keyframe.pose = toPose6f(msg.graph.poses[i]);
     }
 }
 
 void ALCPlannerNode::ingestLinks(const rtabmap_msgs::msg::MapData& msg) {
-    graph_.adj.clear();
-    for (const auto& [node_id, keyframe] : graph_.keyframes) {
-        (void)keyframe;
-        graph_.adj[node_id];
+    for (auto& edges : graph_.adj) {
+        edges.clear();
     }
 
     for (const auto& link : msg.graph.links) {
-        const auto it_from = graph_.keyframes.find(link.from_id);
-        const auto it_to = graph_.keyframes.find(link.to_id);
-        if (it_from == graph_.keyframes.end() ||
-            it_to == graph_.keyframes.end()) {
+        const auto from_it = graph_.node_to_ix.find(link.from_id);
+        const auto to_it = graph_.node_to_ix.find(link.to_id);
+        if (from_it == graph_.node_to_ix.end() ||
+            to_it == graph_.node_to_ix.end()) {
             continue;
         }
 
+        const int from_ix = from_it->second;
+        const int to_ix = to_it->second;
         const float dist =
-            (it_from->second.pose.position - it_to->second.pose.position)
+            (graph_.keyframes[static_cast<std::size_t>(from_ix)].pose.position -
+             graph_.keyframes[static_cast<std::size_t>(to_ix)].pose.position)
                 .norm();
-        graph_.adj[link.from_id].push_back({link.to_id, dist});
-        graph_.adj[link.to_id].push_back({link.from_id, dist});
+        const float variance = scalarVarianceFromInformation(link.information);
+        graph_.adj[static_cast<std::size_t>(from_ix)].push_back(
+            {to_ix, dist, variance});
+        graph_.adj[static_cast<std::size_t>(to_ix)].push_back(
+            {from_ix, dist, variance});
+        RCLCPP_DEBUG(get_logger(),
+                     "[ALCPlanner] link %d->%d: dist=%.3f variance=%.6f",
+                     link.from_id, link.to_id, dist, variance);
     }
+    ++graph_.version;
 
     RCLCPP_DEBUG(get_logger(),
                  "[ALCPlanner] ingestLinks: rebuilt %zu directed edges",
@@ -188,17 +248,19 @@ void ALCPlannerNode::ingestLinks(const rtabmap_msgs::msg::MapData& msg) {
 }
 
 void ALCPlannerNode::checkLighthouse() {
-    if (graph_.robot_node_id < 0) {
+    if (graph_.robot_ix < 0 ||
+        graph_.robot_ix >= static_cast<int>(graph_.keyframes.size())) {
+        return;
+    }
+    if (graph_.robot_ix >= static_cast<int>(saliency_state_.keyframes.size())) {
         return;
     }
 
-    const auto it = graph_.keyframes.find(graph_.robot_node_id);
-    if (it == graph_.keyframes.end()) {
-        return;
-    }
-
-    Keyframe& current = it->second;
-    if (current.saliency_local <= params_.cs_lighthouse) {
+    Keyframe& current =
+        graph_.keyframes[static_cast<std::size_t>(graph_.robot_ix)];
+    KeyframeSaliency& current_saliency =
+        saliency_state_.keyframes[static_cast<std::size_t>(graph_.robot_ix)];
+    if (current_saliency.saliency_local <= params_.cs_lighthouse) {
         return;
     }
 
@@ -210,11 +272,11 @@ void ALCPlannerNode::checkLighthouse() {
         return;
     }
 
-    current.is_lighthouse = true;
+    current_saliency.is_lighthouse = true;
     last_lighthouse_pose_ = current.pose;
     has_lighthouse_ = true;
     RCLCPP_INFO(get_logger(), "[ALCPlanner] lighthouse at node %d (S_L=%.3f)",
-                current.node_id, current.saliency_local);
+                current.node_id, current_saliency.saliency_local);
 }
 
 void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
@@ -246,7 +308,7 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
 
     RCLCPP_INFO(get_logger(),
                 "[ALCPlanner] sending nav goal: tau_id=%d x=%.2f y=%.2f",
-                target.tau_id, target.rep_pose.position.x(),
+                nodeIdFromIx(target.tau_ix), target.rep_pose.position.x(),
                 target.rep_pose.position.y());
 
     const std::weak_ptr<ALCPlannerNode> weak_self =
@@ -310,6 +372,8 @@ void ALCPlannerNode::sendSpinGoal() {
     goal.target_yaw = static_cast<float>(2.0 * M_PI);
 
     RCLCPP_INFO(get_logger(), "[ALCPlanner] sending spin goal: yaw=2pi");
+    alc_rotation_observed_loop_closure_ = false;
+    alc_rotation_attempt_active_ = false;
 
     const std::weak_ptr<ALCPlannerNode> weak_self =
         std::static_pointer_cast<ALCPlannerNode>(shared_from_this());
@@ -324,6 +388,7 @@ void ALCPlannerNode::sendSpinGoal() {
         }
 
         self->slam_graph_planner_.onRotationComplete();
+        self->alc_rotation_attempt_active_ = false;
         self->last_alc_time_ = self->now();
         RCLCPP_WARN(self->get_logger(), "[ALCPlanner] spin goal rejected");
     };
@@ -333,22 +398,33 @@ void ALCPlannerNode::sendSpinGoal() {
             return;
         }
         (void)result;
+        if (self->alc_rotation_attempt_active_) {
+            self->saliency_eval_.observeLoopClosureAttempt(
+                self->alc_rotation_observed_loop_closure_);
+        }
+        self->alc_rotation_attempt_active_ = false;
+        self->alc_rotation_observed_loop_closure_ = false;
         self->slam_graph_planner_.onRotationComplete();
         self->last_alc_time_ = self->now();
         RCLCPP_INFO(self->get_logger(), "[ALCPlanner] ALC rotation complete");
     };
 
-    spin_client_->async_send_goal(goal, options);
+    (void)spin_client_->async_send_goal(goal, options);
+    alc_rotation_attempt_active_ = true;
 }
 
 float ALCPlannerNode::computeCoverageRatio() const {
-    return 0.5f;
+    return cached_coverage_ratio_;
 }
 
 void ALCPlannerNode::logGraphState() const {
+    if (!rcutils_logging_logger_is_enabled_for(get_logger().get_name(),
+                                               RCUTILS_LOG_SEVERITY_DEBUG)) {
+        return;
+    }
+
     std::size_t edge_count = 0;
-    for (const auto& [node_id, edges] : graph_.adj) {
-        (void)node_id;
+    for (const auto& edges : graph_.adj) {
         edge_count += edges.size();
     }
 
@@ -357,8 +433,7 @@ void ALCPlannerNode::logGraphState() const {
 
     std::vector<const Keyframe*> ordered_keyframes;
     ordered_keyframes.reserve(graph_.keyframes.size());
-    for (const auto& [node_id, keyframe] : graph_.keyframes) {
-        (void)node_id;
+    for (const auto& keyframe : graph_.keyframes) {
         ordered_keyframes.push_back(&keyframe);
     }
     std::sort(ordered_keyframes.begin(), ordered_keyframes.end(),
@@ -368,54 +443,50 @@ void ALCPlannerNode::logGraphState() const {
 
     for (const Keyframe* keyframe_ptr : ordered_keyframes) {
         const Keyframe& keyframe = *keyframe_ptr;
+        const auto node_it = graph_.node_to_ix.find(keyframe.node_id);
+        const int ix =
+            node_it != graph_.node_to_ix.end() ? node_it->second : -1;
+        const KeyframeSaliency* saliency =
+            (ix >= 0 && ix < static_cast<int>(saliency_state_.keyframes.size()))
+                ? &saliency_state_.keyframes[static_cast<std::size_t>(ix)]
+                : nullptr;
         RCLCPP_DEBUG(get_logger(),
                      "[ALCPlanner] node %d: S_L=%.3f S_G=%.3f "
                      "plc_intrinsic=%.3f words=%zu",
-                     keyframe.node_id, keyframe.saliency_local,
-                     keyframe.saliency_global, keyframe.plc_intrinsic,
+                     keyframe.node_id,
+                     saliency ? saliency->saliency_local : 0.0f,
+                     saliency ? saliency->saliency_global : 0.0f,
+                     saliency ? saliency->plc_intrinsic : 0.0f,
                      keyframe.word_ids.size());
     }
 
     RCLCPP_DEBUG(get_logger(), "[ALCPlanner] candidates: %zu",
                  candidates_.size());
     for (const auto& candidate : candidates_) {
+        const int tau_node_id = nodeIdFromIx(candidate.tau_ix);
         RCLCPP_DEBUG(get_logger(),
                      "[ALCPlanner] cand tau_id=%d euclid=%.2f graph_dist=%.2f "
-                     "reward_ub=%.4f lighthouse=%d cluster_size=%zu",
-                     candidate.tau_id, candidate.euclidean_dist,
-                     candidate.graph_dist, candidate.reward_ub,
+                     "graph_var=%.4f reward_ub=%.4f lighthouse=%d "
+                     "cluster_size=%zu",
+                     tau_node_id, candidate.euclidean_dist,
+                     candidate.graph_dist, candidate.graph_dist_var,
+                     candidate.reward_ub,
                      static_cast<int>(candidate.is_lighthouse),
-                     candidate.keyframe_ids.size());
+                     candidate.keyframe_ixs.size());
     }
 
-    if (graph_.robot_node_id < 0) {
+    if (graph_.robot_ix < 0) {
         RCLCPP_DEBUG(get_logger(),
                      "[ALCPlanner] robot_node_id unavailable, skipping graph "
                      "distance logging");
-        return;
     }
+}
 
-    const auto dist_map =
-        UncertaintyMetrics::dijkstraAll(graph_, graph_.robot_node_id);
-    if (dist_map.empty()) {
-        RCLCPP_DEBUG(get_logger(),
-                     "[ALCPlanner] robot node %d not found in graph, skipping "
-                     "graph distance logging",
-                     graph_.robot_node_id);
-        return;
+int ALCPlannerNode::nodeIdFromIx(const int ix) const {
+    if (ix < 0 || ix >= static_cast<int>(graph_.ix_to_node.size())) {
+        return -1;
     }
-
-    std::vector<std::pair<int, float>> ordered_distances(dist_map.begin(),
-                                                         dist_map.end());
-    std::sort(
-        ordered_distances.begin(), ordered_distances.end(),
-        [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
-
-    for (const auto& [node_id, dist] : ordered_distances) {
-        RCLCPP_DEBUG(get_logger(),
-                     "[ALCPlanner] graph_dist robot=%d -> node=%d : %.3f",
-                     graph_.robot_node_id, node_id, dist);
-    }
+    return graph_.ix_to_node[static_cast<std::size_t>(ix)];
 }
 
 }  // namespace alc_planner
