@@ -2,15 +2,13 @@
 
 #include <Eigen/Core>
 
-#include "alc_planner/uncertainty_metrics.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "alc_planner/uncertainty_metrics.hpp"
 
 namespace alc_planner
 {
@@ -21,28 +19,31 @@ namespace
 constexpr int kUnvisited = -2;
 constexpr int kNoise = -1;
 
-float positionDistance(const GraphState& graph, const int lhs_id,
-                       const int rhs_id) {
-    const auto lhs_it = graph.keyframes.find(lhs_id);
-    const auto rhs_it = graph.keyframes.find(rhs_id);
-    if (lhs_it == graph.keyframes.end() || rhs_it == graph.keyframes.end()) {
-        return std::numeric_limits<float>::infinity();
-    }
+struct PointEntry
+{
+    int ix = -1;
+    Eigen::Vector3f pos = Eigen::Vector3f::Zero();
+};
 
-    return (lhs_it->second.pose.position - rhs_it->second.pose.position).norm();
-}
-
-std::vector<int> regionQuery(const GraphState& graph,
-                             const std::vector<int>& ids, const int query_id,
+std::vector<int> regionQuery(const std::vector<PointEntry>& points,
+                             const std::size_t query_index,
                              const float eps_dbscan) {
     std::vector<int> neighbors;
-    neighbors.reserve(ids.size());
-    for (const int other_id : ids) {
-        if (positionDistance(graph, query_id, other_id) <= eps_dbscan) {
-            neighbors.push_back(other_id);
+    neighbors.reserve(points.size());
+    const Eigen::Vector3f& query_pos = points[query_index].pos;
+    for (const auto& point : points) {
+        if ((point.pos - query_pos).norm() <= eps_dbscan) {
+            neighbors.push_back(point.ix);
         }
     }
     return neighbors;
+}
+
+float distAt(const std::vector<float>& dist_map, const int ix) {
+    if (ix < 0 || ix >= static_cast<int>(dist_map.size())) {
+        return std::numeric_limits<float>::infinity();
+    }
+    return dist_map[static_cast<std::size_t>(ix)];
 }
 
 }  // namespace
@@ -50,47 +51,60 @@ std::vector<int> regionQuery(const GraphState& graph,
 CandidateBuilder::CandidateBuilder(Params params) : params_(params) {}
 
 std::vector<ALCCandidate> CandidateBuilder::build(
-    const GraphState& graph) const {
-    const auto robot_it = graph.keyframes.find(graph.robot_node_id);
-    if (robot_it == graph.keyframes.end()) {
+    const GraphState& graph, const SaliencyState& saliency_state) {
+    if (graph.robot_ix < 0 ||
+        graph.robot_ix >= static_cast<int>(graph.keyframes.size())) {
         return {};
     }
 
-    const auto dist_map =
-        UncertaintyMetrics::dijkstraAll(graph, graph.robot_node_id);
+    const DijkstraKey cache_key{graph.version, graph.robot_ix};
+    bool cache_matches = false;
+    if (dijkstra_cache_.has_value()) {
+        cache_matches = (dijkstra_cache_->key == cache_key);
+    }
+    if (!cache_matches) {
+        dijkstra_cache_ = DijkstraCache{cache_key, computeDijkstra(graph)};
+    }
+    const DijkstraResult& dijkstra_result = dijkstra_cache_->result;
 
-    const std::vector<int> filtered = filterKeyframes(graph, dist_map);
+    const std::vector<int> filtered =
+        filterKeyframes(graph, saliency_state, dijkstra_result.by_dist);
     if (filtered.empty()) {
         return {};
     }
 
     const std::vector<std::vector<int>> clusters = dbscan(graph, filtered);
-    const Pose6f& robot_pose = robot_it->second.pose;
+    const Pose6f& robot_pose =
+        graph.keyframes[static_cast<std::size_t>(graph.robot_ix)].pose;
 
     std::vector<ALCCandidate> candidates;
     candidates.reserve(clusters.size());
-    for (const auto& cluster : clusters) {
-        const int rep_id = selectRepresentative(graph, cluster, robot_pose);
-        if (rep_id < 0) {
+    for (const auto& cluster_ixs : clusters) {
+        const int rep_ix = selectRepresentative(graph, saliency_state,
+                                                cluster_ixs, robot_pose);
+        if (rep_ix < 0 || rep_ix >= static_cast<int>(graph.keyframes.size())) {
             continue;
         }
 
-        const auto rep_it = graph.keyframes.find(rep_id);
-        if (rep_it == graph.keyframes.end()) {
-            continue;
-        }
+        const Keyframe& representative =
+            graph.keyframes[static_cast<std::size_t>(rep_ix)];
 
         ALCCandidate candidate;
-        candidate.tau_id = rep_id;
-        candidate.rep_pose = rep_it->second.pose;
-        candidate.keyframe_ids = cluster;
+        candidate.tau_ix = rep_ix;
+        candidate.rep_pose = representative.pose;
+        candidate.keyframe_ixs = cluster_ixs;
         candidate.euclidean_dist =
             (robot_pose.position - candidate.rep_pose.position).norm();
-        const auto dist_it = dist_map.find(rep_id);
-        candidate.graph_dist = dist_it != dist_map.end()
-                                   ? dist_it->second
-                                   : std::numeric_limits<float>::infinity();
-        candidate.is_lighthouse = rep_it->second.is_lighthouse;
+        candidate.graph_dist = distAt(dijkstra_result.by_dist, rep_ix);
+        if (dijkstra_result.by_variance.has_value()) {
+            candidate.graph_dist_var =
+                distAt(*dijkstra_result.by_variance, rep_ix);
+        }
+        candidate.is_lighthouse =
+            rep_ix < static_cast<int>(saliency_state.keyframes.size())
+                ? saliency_state.keyframes[static_cast<std::size_t>(rep_ix)]
+                      .is_lighthouse
+                : false;
         candidates.push_back(std::move(candidate));
     }
 
@@ -98,106 +112,133 @@ std::vector<ALCCandidate> CandidateBuilder::build(
 }
 
 std::vector<int> CandidateBuilder::filterKeyframes(
-    const GraphState& graph,
-    const std::unordered_map<int, float>& dist_map) const {
-    const auto robot_it = graph.keyframes.find(graph.robot_node_id);
-    if (robot_it == graph.keyframes.end()) {
+    const GraphState& graph, const SaliencyState& saliency_state,
+    const std::vector<float>& dist_map) const {
+    if (graph.robot_ix < 0 ||
+        graph.robot_ix >= static_cast<int>(graph.keyframes.size())) {
         return {};
     }
 
-    const Pose6f& robot_pose = robot_it->second.pose;
+    const Pose6f& robot_pose =
+        graph.keyframes[static_cast<std::size_t>(graph.robot_ix)].pose;
     std::vector<int> result;
     result.reserve(graph.keyframes.size());
 
-    for (const auto& [node_id, keyframe] : graph.keyframes) {
-        if (node_id == graph.robot_node_id) {
+    for (int ix = 0; ix < static_cast<int>(graph.keyframes.size()); ++ix) {
+        if (ix == graph.robot_ix) {
             continue;
         }
 
+        const Keyframe& keyframe =
+            graph.keyframes[static_cast<std::size_t>(ix)];
         const float euclidean_dist =
             (keyframe.pose.position - robot_pose.position).norm();
         if (euclidean_dist > params_.cE) {
             continue;
         }
-
-        if (keyframe.saliency_local < params_.cs) {
+        if (ix >= static_cast<int>(saliency_state.keyframes.size()) ||
+            saliency_state.keyframes[static_cast<std::size_t>(ix)]
+                    .saliency_local < params_.cs) {
             continue;
         }
 
-        const auto dist_it = dist_map.find(node_id);
-        const float graph_dist = dist_it != dist_map.end()
-                                     ? dist_it->second
-                                     : std::numeric_limits<float>::infinity();
+        const float graph_dist = distAt(dist_map, ix);
         if (graph_dist < params_.cG) {
             continue;
         }
 
-        result.push_back(node_id);
+        result.push_back(ix);
     }
 
     return result;
 }
 
 std::vector<std::vector<int>> CandidateBuilder::dbscan(
-    const GraphState& graph, const std::vector<int>& ids) const {
-    std::unordered_map<int, int> labels;
-    labels.reserve(ids.size());
-    for (const int id : ids) {
-        labels.emplace(id, kUnvisited);
+    const GraphState& graph, const std::vector<int>& ixs) const {
+    std::vector<PointEntry> points;
+    points.reserve(ixs.size());
+    std::vector<int> point_lookup(graph.keyframes.size(), -1);
+    for (const int ix : ixs) {
+        if (ix < 0 || ix >= static_cast<int>(graph.keyframes.size())) {
+            continue;
+        }
+        point_lookup[static_cast<std::size_t>(ix)] =
+            static_cast<int>(points.size());
+        points.push_back(
+            {ix, graph.keyframes[static_cast<std::size_t>(ix)].pose.position});
     }
 
+    std::vector<int> labels(points.size(), kUnvisited);
     std::vector<std::vector<int>> clusters;
-    for (const int point_id : ids) {
-        if (labels[point_id] != kUnvisited) {
+    for (std::size_t point_index = 0; point_index < points.size();
+         ++point_index) {
+        const int point_ix = points[point_index].ix;
+        if (labels[point_index] != kUnvisited) {
             continue;
         }
 
         const std::vector<int> neighbors =
-            regionQuery(graph, ids, point_id, params_.eps_dbscan);
+            regionQuery(points, point_index, params_.eps_dbscan);
         if (static_cast<int>(neighbors.size()) < params_.min_pts) {
-            labels[point_id] = kNoise;
+            labels[point_index] = kNoise;
             continue;
         }
 
         const int cluster_label = static_cast<int>(clusters.size());
         std::vector<int> cluster;
-        cluster.push_back(point_id);
-        labels[point_id] = cluster_label;
+        cluster.push_back(point_ix);
+        labels[point_index] = cluster_label;
 
         std::vector<int> seed_set;
         seed_set.reserve(neighbors.size());
-        for (const int neighbor_id : neighbors) {
-            if (neighbor_id != point_id) {
-                seed_set.push_back(neighbor_id);
+        for (const int neighbor_ix : neighbors) {
+            if (neighbor_ix != point_ix) {
+                seed_set.push_back(neighbor_ix);
             }
         }
 
         for (std::size_t seed_index = 0; seed_index < seed_set.size();
              ++seed_index) {
-            const int neighbor_id = seed_set[seed_index];
-            const int prev_label = labels[neighbor_id];
+            const int neighbor_ix = seed_set[seed_index];
+            const int neighbor_index_lookup =
+                point_lookup[static_cast<std::size_t>(neighbor_ix)];
+            if (neighbor_index_lookup < 0) {
+                continue;
+            }
+
+            int& neighbor_label =
+                labels[static_cast<std::size_t>(neighbor_index_lookup)];
+            const int prev_label = neighbor_label;
             if (prev_label == kNoise) {
-                labels[neighbor_id] = cluster_label;
-                cluster.push_back(neighbor_id);
+                neighbor_label = cluster_label;
+                cluster.push_back(neighbor_ix);
                 continue;
             }
             if (prev_label != kUnvisited) {
                 continue;
             }
 
-            labels[neighbor_id] = cluster_label;
-            cluster.push_back(neighbor_id);
+            neighbor_label = cluster_label;
+            cluster.push_back(neighbor_ix);
 
-            const std::vector<int> neighbor_neighbors =
-                regionQuery(graph, ids, neighbor_id, params_.eps_dbscan);
+            const std::vector<int> neighbor_neighbors = regionQuery(
+                points, static_cast<std::size_t>(neighbor_index_lookup),
+                params_.eps_dbscan);
             if (static_cast<int>(neighbor_neighbors.size()) < params_.min_pts) {
                 continue;
             }
 
-            for (const int expanded_id : neighbor_neighbors) {
-                if (labels[expanded_id] == kUnvisited ||
-                    labels[expanded_id] == kNoise) {
-                    seed_set.push_back(expanded_id);
+            for (const int expanded_ix : neighbor_neighbors) {
+                const int expanded_index_lookup =
+                    point_lookup[static_cast<std::size_t>(expanded_ix)];
+                if (expanded_index_lookup < 0) {
+                    continue;
+                }
+
+                const int expanded_label =
+                    labels[static_cast<std::size_t>(expanded_index_lookup)];
+                if (expanded_label == kUnvisited || expanded_label == kNoise) {
+                    seed_set.push_back(expanded_ix);
                 }
             }
         }
@@ -209,18 +250,19 @@ std::vector<std::vector<int>> CandidateBuilder::dbscan(
 }
 
 int CandidateBuilder::selectRepresentative(const GraphState& graph,
-                                           const std::vector<int>& cluster_ids,
+                                           const SaliencyState& saliency_state,
+                                           const std::vector<int>& cluster_ixs,
                                            const Pose6f& robot_pose) const {
     float best_score = -1.0f;
-    int best_id = -1;
+    int best_ix = -1;
 
-    for (const int node_id : cluster_ids) {
-        const auto it = graph.keyframes.find(node_id);
-        if (it == graph.keyframes.end()) {
+    for (const int ix : cluster_ixs) {
+        if (ix < 0 || ix >= static_cast<int>(graph.keyframes.size())) {
             continue;
         }
 
-        const Keyframe& keyframe = it->second;
+        const Keyframe& keyframe =
+            graph.keyframes[static_cast<std::size_t>(ix)];
         Eigen::Vector3f approach = keyframe.pose.position - robot_pose.position;
         if (approach.norm() < 1e-6f) {
             approach = keyframe.pose.forward();
@@ -233,30 +275,50 @@ int CandidateBuilder::selectRepresentative(const GraphState& graph,
             continue;
         }
 
-        if (keyframe.plc_intrinsic > best_score) {
-            best_score = keyframe.plc_intrinsic;
-            best_id = node_id;
+        const float plc_intrinsic =
+            ix < static_cast<int>(saliency_state.keyframes.size())
+                ? saliency_state.keyframes[static_cast<std::size_t>(ix)]
+                      .plc_intrinsic
+                : 0.0f;
+        if (plc_intrinsic > best_score) {
+            best_score = plc_intrinsic;
+            best_ix = ix;
         }
     }
 
-    if (best_id != -1) {
-        return best_id;
+    if (best_ix != -1) {
+        return best_ix;
     }
 
     best_score = -1.0f;
-    for (const int node_id : cluster_ids) {
-        const auto it = graph.keyframes.find(node_id);
-        if (it == graph.keyframes.end()) {
+    for (const int ix : cluster_ixs) {
+        if (ix < 0 || ix >= static_cast<int>(graph.keyframes.size())) {
             continue;
         }
 
-        if (it->second.plc_intrinsic > best_score) {
-            best_score = it->second.plc_intrinsic;
-            best_id = node_id;
+        const float score =
+            ix < static_cast<int>(saliency_state.keyframes.size())
+                ? saliency_state.keyframes[static_cast<std::size_t>(ix)]
+                      .plc_intrinsic
+                : 0.0f;
+        if (score > best_score) {
+            best_score = score;
+            best_ix = ix;
         }
     }
 
-    return best_id;
+    return best_ix;
+}
+
+CandidateBuilder::DijkstraResult CandidateBuilder::computeDijkstra(
+    const GraphState& graph) const {
+    DijkstraResult result;
+    result.by_dist = UncertaintyMetrics::dijkstraAll(graph, graph.robot_ix);
+    if (params_.use_variance_uncertainty) {
+        result.by_variance =
+            UncertaintyMetrics::dijkstraVarianceAll(graph, graph.robot_ix);
+    }
+    return result;
 }
 
 }  // namespace alc_planner
