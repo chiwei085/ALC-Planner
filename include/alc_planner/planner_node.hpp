@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "alc_planner/candidate_builder.hpp"
+#include "alc_planner/reward_evaluator.hpp"
 #include "alc_planner/saliency_evaluator.hpp"
 #include "alc_planner/types.hpp"
 #include "alc_planner/uncertainty_metrics.hpp"
@@ -34,6 +35,7 @@ private:
     Params params_;
     SaliencyEvaluator saliency_eval_;
     CandidateBuilder candidate_builder_;
+    RewardEvaluator reward_evaluator_;
     GraphState graph_;
     nav_msgs::msg::OccupancyGrid::SharedPtr occupancy_map_;
     std::vector<ALCCandidate> candidates_;

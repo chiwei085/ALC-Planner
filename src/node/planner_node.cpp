@@ -53,7 +53,8 @@ std::optional<int> extractWordsRecognized(const rtabmap_msgs::msg::Info& msg) {
 ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
     : rclcpp::Node("alc_planner", opts),
       saliency_eval_(params_),
-      candidate_builder_(params_) {
+      candidate_builder_(params_),
+      reward_evaluator_(params_) {
     sub_map_data_ = create_subscription<rtabmap_msgs::msg::MapData>(
         "/rtabmap/mapData", rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMapData, this, std::placeholders::_1));
@@ -76,6 +77,9 @@ void ALCPlannerNode::onMapData(
     saliency_eval_.update(graph_);
     checkLighthouse();
     candidates_ = candidate_builder_.build(graph_);
+    for (auto& candidate : candidates_) {
+        reward_evaluator_.fillRewardUB(candidate, graph_);
+    }
     last_map_data_stamp_ = msg->header.stamp;
     logGraphState();
 }
@@ -218,9 +222,9 @@ void ALCPlannerNode::logGraphState() const {
     for (const auto& candidate : candidates_) {
         RCLCPP_DEBUG(get_logger(),
                      "[ALCPlanner] cand tau_id=%d euclid=%.2f graph_dist=%.2f "
-                     "lighthouse=%d cluster_size=%zu",
+                     "reward_ub=%.4f lighthouse=%d cluster_size=%zu",
                      candidate.tau_id, candidate.euclidean_dist,
-                     candidate.graph_dist,
+                     candidate.graph_dist, candidate.reward_ub,
                      static_cast<int>(candidate.is_lighthouse),
                      candidate.keyframe_ids.size());
     }
