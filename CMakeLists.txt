@@ -96,6 +96,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_saliency_evaluator test/test_saliency_evaluator.cpp)
   target_link_libraries(test_saliency_evaluator alc_planner_core)
+
+  ament_add_gtest(test_candidate_builder test/test_candidate_builder.cpp)
+  target_link_libraries(test_candidate_builder alc_planner_core)
 endif()
 
 ament_package()
