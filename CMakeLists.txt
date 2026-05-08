@@ -18,6 +18,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(rtabmap_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -53,6 +54,7 @@ ament_target_dependencies(
   nav2_msgs
   nav_msgs
   rclcpp
+  rclcpp_action
   rtabmap_msgs
   sensor_msgs
   std_msgs

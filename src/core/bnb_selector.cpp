@@ -7,7 +7,7 @@
 namespace alc_planner
 {
 
-BNBSelector::BNBSelector(const Params& params)
+BNBSelector::BNBSelector(Params params)
     : params_(params), evaluator_(params_) {}
 
 std::optional<ALCCandidate> BNBSelector::select(

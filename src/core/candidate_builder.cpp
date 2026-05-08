@@ -47,7 +47,7 @@ std::vector<int> regionQuery(const GraphState& graph,
 
 }  // namespace
 
-CandidateBuilder::CandidateBuilder(const Params& params) : params_(params) {}
+CandidateBuilder::CandidateBuilder(Params params) : params_(params) {}
 
 std::vector<ALCCandidate> CandidateBuilder::build(
     const GraphState& graph) const {

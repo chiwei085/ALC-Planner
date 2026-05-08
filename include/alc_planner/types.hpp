@@ -73,6 +73,9 @@ struct Params
     float cs = 0.3f;
     float eps_dbscan = 1.5f;
     int min_pts = 2;
+    float theta_max = 0.5f;
+    float lambda_decay = 0.01f;
+    float alpha_cov = 0.3f;
 };
 
 }  // namespace alc_planner

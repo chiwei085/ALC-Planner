@@ -15,14 +15,14 @@ namespace alc_planner
 class BNBSelector
 {
 public:
-    explicit BNBSelector(const Params& params);
+    explicit BNBSelector(Params params);
 
     std::optional<ALCCandidate> select(
         std::vector<ALCCandidate> candidates, const GraphState& graph,
         const nav_msgs::msg::OccupancyGrid& map) const;
 
 private:
-    const Params& params_;
+    Params params_;
     RewardEvaluator evaluator_;
     PathPlanner path_planner_;
 };

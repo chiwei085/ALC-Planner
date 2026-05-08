@@ -7,7 +7,7 @@
 namespace alc_planner
 {
 
-SaliencyEvaluator::SaliencyEvaluator(const Params& params) : params_(params) {}
+SaliencyEvaluator::SaliencyEvaluator(Params params) : params_(params) {}
 
 void SaliencyEvaluator::update(GraphState& graph) {
     rebuildWordFrequency(graph);

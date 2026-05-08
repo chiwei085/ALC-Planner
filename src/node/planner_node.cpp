@@ -2,8 +2,10 @@
 
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/pose.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -55,7 +57,12 @@ ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
       saliency_eval_(params_),
       candidate_builder_(params_),
       reward_evaluator_(params_),
-      bnb_selector_(params_) {
+      bnb_selector_(params_),
+      slam_graph_planner_(params_) {
+    nav_client_ =
+        rclcpp_action::create_client<NavigateToPose>(this, "/navigate_to_pose");
+    spin_client_ = rclcpp_action::create_client<Spin>(this, "/spin");
+
     sub_map_data_ = create_subscription<rtabmap_msgs::msg::MapData>(
         "/rtabmap/mapData", rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMapData, this, std::placeholders::_1));
@@ -93,6 +100,17 @@ void ALCPlannerNode::onMapData(
                 best_candidate_->map_dist);
         }
     }
+
+    const double elapsed = last_alc_time_.nanoseconds() == 0
+                               ? std::numeric_limits<double>::infinity()
+                               : (now() - last_alc_time_).seconds();
+    const float coverage_ratio = computeCoverageRatio();
+    const auto to_navigate = slam_graph_planner_.onEvaluationComplete(
+        best_candidate_, elapsed, coverage_ratio);
+    if (to_navigate.has_value()) {
+        sendNavGoal(*to_navigate);
+    }
+
     last_map_data_stamp_ = msg->header.stamp;
     logGraphState();
 }
@@ -197,6 +215,134 @@ void ALCPlannerNode::checkLighthouse() {
     has_lighthouse_ = true;
     RCLCPP_INFO(get_logger(), "[ALCPlanner] lighthouse at node %d (S_L=%.3f)",
                 current.node_id, current.saliency_local);
+}
+
+void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
+    if (!nav_client_) {
+        (void)slam_graph_planner_.onNavigationResult(false);
+        best_candidate_.reset();
+        RCLCPP_WARN(get_logger(),
+                    "[ALCPlanner] navigate_to_pose action client unavailable");
+        return;
+    }
+    if (!nav_client_->wait_for_action_server(std::chrono::seconds(0))) {
+        (void)slam_graph_planner_.onNavigationResult(false);
+        best_candidate_.reset();
+        RCLCPP_WARN(get_logger(),
+                    "[ALCPlanner] navigate_to_pose action server unavailable");
+        return;
+    }
+
+    NavigateToPose::Goal goal;
+    goal.pose.header.frame_id = "map";
+    goal.pose.header.stamp = now();
+    goal.pose.pose.position.x = target.rep_pose.position.x();
+    goal.pose.pose.position.y = target.rep_pose.position.y();
+    goal.pose.pose.position.z = target.rep_pose.position.z();
+    goal.pose.pose.orientation.x = target.rep_pose.orientation.x();
+    goal.pose.pose.orientation.y = target.rep_pose.orientation.y();
+    goal.pose.pose.orientation.z = target.rep_pose.orientation.z();
+    goal.pose.pose.orientation.w = target.rep_pose.orientation.w();
+
+    RCLCPP_INFO(get_logger(),
+                "[ALCPlanner] sending nav goal: tau_id=%d x=%.2f y=%.2f",
+                target.tau_id, target.rep_pose.position.x(),
+                target.rep_pose.position.y());
+
+    const std::weak_ptr<ALCPlannerNode> weak_self =
+        std::static_pointer_cast<ALCPlannerNode>(shared_from_this());
+    rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;
+    options.goal_response_callback = [weak_self](const auto& handle) {
+        const auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        if (handle) {
+            return;
+        }
+
+        (void)self->slam_graph_planner_.onNavigationResult(false);
+        self->best_candidate_.reset();
+        RCLCPP_WARN(self->get_logger(),
+                    "[ALCPlanner] navigation goal rejected");
+    };
+    options.result_callback = [weak_self](const auto& result) {
+        const auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        const bool success =
+            result.code == rclcpp_action::ResultCode::SUCCEEDED;
+        const bool should_spin =
+            self->slam_graph_planner_.onNavigationResult(success);
+        if (should_spin) {
+            self->sendSpinGoal();
+            return;
+        }
+
+        if (!success) {
+            self->best_candidate_.reset();
+            RCLCPP_WARN(self->get_logger(),
+                        "[ALCPlanner] navigation to ALC target failed");
+        }
+    };
+
+    nav_client_->async_send_goal(goal, options);
+}
+
+void ALCPlannerNode::sendSpinGoal() {
+    if (!spin_client_) {
+        slam_graph_planner_.onRotationComplete();
+        last_alc_time_ = now();
+        RCLCPP_WARN(get_logger(),
+                    "[ALCPlanner] spin action client unavailable");
+        return;
+    }
+    if (!spin_client_->wait_for_action_server(std::chrono::seconds(0))) {
+        slam_graph_planner_.onRotationComplete();
+        last_alc_time_ = now();
+        RCLCPP_WARN(get_logger(),
+                    "[ALCPlanner] spin action server unavailable");
+        return;
+    }
+
+    Spin::Goal goal;
+    goal.target_yaw = static_cast<float>(2.0 * M_PI);
+
+    RCLCPP_INFO(get_logger(), "[ALCPlanner] sending spin goal: yaw=2pi");
+
+    const std::weak_ptr<ALCPlannerNode> weak_self =
+        std::static_pointer_cast<ALCPlannerNode>(shared_from_this());
+    rclcpp_action::Client<Spin>::SendGoalOptions options;
+    options.goal_response_callback = [weak_self](const auto& handle) {
+        const auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        if (handle) {
+            return;
+        }
+
+        self->slam_graph_planner_.onRotationComplete();
+        self->last_alc_time_ = self->now();
+        RCLCPP_WARN(self->get_logger(), "[ALCPlanner] spin goal rejected");
+    };
+    options.result_callback = [weak_self](const auto& result) {
+        const auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        (void)result;
+        self->slam_graph_planner_.onRotationComplete();
+        self->last_alc_time_ = self->now();
+        RCLCPP_INFO(self->get_logger(), "[ALCPlanner] ALC rotation complete");
+    };
+
+    spin_client_->async_send_goal(goal, options);
+}
+
+float ALCPlannerNode::computeCoverageRatio() const {
+    return 0.5f;
 }
 
 void ALCPlannerNode::logGraphState() const {

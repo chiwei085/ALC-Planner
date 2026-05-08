@@ -15,7 +15,7 @@ float expDistanceDecay(const float l_minus, const float cl) {
 
 }  // namespace
 
-RewardEvaluator::RewardEvaluator(const Params& params) : params_(params) {}
+RewardEvaluator::RewardEvaluator(Params params) : params_(params) {}
 
 void RewardEvaluator::fillRewardUB(ALCCandidate& candidate,
                                    const GraphState& graph) const {

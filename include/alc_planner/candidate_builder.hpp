@@ -11,7 +11,7 @@ namespace alc_planner
 class CandidateBuilder
 {
 public:
-    explicit CandidateBuilder(const Params& params);
+    explicit CandidateBuilder(Params params);
 
     std::vector<ALCCandidate> build(const GraphState& graph) const;
 
@@ -27,7 +27,7 @@ private:
                              const std::vector<int>& cluster_ids,
                              const Pose6f& robot_pose) const;
 
-    const Params& params_;
+    Params params_;
 };
 
 }  // namespace alc_planner

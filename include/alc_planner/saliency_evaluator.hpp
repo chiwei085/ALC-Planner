@@ -11,14 +11,14 @@ namespace alc_planner
 class SaliencyEvaluator
 {
 public:
-    explicit SaliencyEvaluator(const Params& params);
+    explicit SaliencyEvaluator(Params params);
 
     void update(GraphState& graph);
     void observeWordsRecognized(int count);
     float latestSL() const { return latest_sl_; }
 
 private:
-    const Params& params_;
+    Params params_;
     int max_words_recognized_ = 1;
     float latest_sl_ = 0.0f;
     std::unordered_map<int32_t, int> word_node_count_;
