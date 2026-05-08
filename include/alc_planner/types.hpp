@@ -43,11 +43,29 @@ struct GraphState
     int robot_node_id = -1;
 };
 
+struct ALCCandidate
+{
+    int tau_id = -1;
+    Pose6f rep_pose;
+    std::vector<int> keyframe_ids;
+    float euclidean_dist = 0.0f;
+    float graph_dist = 0.0f;
+    float map_dist = 0.0f;
+    float P_lc = 0.0f;
+    float delta_U = 0.0f;
+    float delta_U_ub = 0.0f;
+    float P_lc_ub = 0.0f;
+    float reward = 0.0f;
+    float reward_ub = 0.0f;
+    bool is_lighthouse = false;
+};
+
 struct Params
 {
     float cv_L = 3.0f;
     float cv_G = 3.0f;
     float cs_lighthouse = 0.6f;
+    float d_min_lighthouse = 5.0f;
     float cl = 10.0f;
     float ct = 0.1f;
     float cE = 15.0f;

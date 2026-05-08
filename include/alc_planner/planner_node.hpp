@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "alc_planner/candidate_builder.hpp"
 #include "alc_planner/saliency_evaluator.hpp"
 #include "alc_planner/types.hpp"
 #include "alc_planner/uncertainty_metrics.hpp"
@@ -27,12 +28,17 @@ private:
 
     void ingestNodes(const rtabmap_msgs::msg::MapData& msg);
     void ingestLinks(const rtabmap_msgs::msg::MapData& msg);
+    void checkLighthouse();
     void logGraphState() const;
 
     Params params_;
+    SaliencyEvaluator saliency_eval_;
+    CandidateBuilder candidate_builder_;
     GraphState graph_;
     nav_msgs::msg::OccupancyGrid::SharedPtr occupancy_map_;
-    SaliencyEvaluator saliency_eval_;
+    std::vector<ALCCandidate> candidates_;
+    Pose6f last_lighthouse_pose_;
+    bool has_lighthouse_ = false;
     rclcpp::Time last_map_data_stamp_{0, 0, RCL_ROS_TIME};
 
     rclcpp::Subscription<rtabmap_msgs::msg::MapData>::SharedPtr sub_map_data_;

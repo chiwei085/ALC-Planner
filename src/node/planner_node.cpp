@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -50,7 +51,9 @@ std::optional<int> extractWordsRecognized(const rtabmap_msgs::msg::Info& msg) {
 }  // namespace
 
 ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
-    : rclcpp::Node("alc_planner", opts), saliency_eval_(params_) {
+    : rclcpp::Node("alc_planner", opts),
+      saliency_eval_(params_),
+      candidate_builder_(params_) {
     sub_map_data_ = create_subscription<rtabmap_msgs::msg::MapData>(
         "/rtabmap/mapData", rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMapData, this, std::placeholders::_1));
@@ -71,6 +74,8 @@ void ALCPlannerNode::onMapData(
     ingestNodes(*msg);
     ingestLinks(*msg);
     saliency_eval_.update(graph_);
+    checkLighthouse();
+    candidates_ = candidate_builder_.build(graph_);
     last_map_data_stamp_ = msg->header.stamp;
     logGraphState();
 }
@@ -147,6 +152,36 @@ void ALCPlannerNode::ingestLinks(const rtabmap_msgs::msg::MapData& msg) {
                  msg.graph.links.size() * 2U);
 }
 
+void ALCPlannerNode::checkLighthouse() {
+    if (graph_.robot_node_id < 0) {
+        return;
+    }
+
+    const auto it = graph_.keyframes.find(graph_.robot_node_id);
+    if (it == graph_.keyframes.end()) {
+        return;
+    }
+
+    Keyframe& current = it->second;
+    if (current.saliency_local <= params_.cs_lighthouse) {
+        return;
+    }
+
+    const float dist_from_last =
+        has_lighthouse_
+            ? (current.pose.position - last_lighthouse_pose_.position).norm()
+            : std::numeric_limits<float>::max();
+    if (dist_from_last <= params_.d_min_lighthouse) {
+        return;
+    }
+
+    current.is_lighthouse = true;
+    last_lighthouse_pose_ = current.pose;
+    has_lighthouse_ = true;
+    RCLCPP_INFO(get_logger(), "[ALCPlanner] lighthouse at node %d (S_L=%.3f)",
+                current.node_id, current.saliency_local);
+}
+
 void ALCPlannerNode::logGraphState() const {
     std::size_t edge_count = 0;
     for (const auto& [node_id, edges] : graph_.adj) {
@@ -176,6 +211,18 @@ void ALCPlannerNode::logGraphState() const {
                      keyframe.node_id, keyframe.saliency_local,
                      keyframe.saliency_global, keyframe.plc_intrinsic,
                      keyframe.word_ids.size());
+    }
+
+    RCLCPP_DEBUG(get_logger(), "[ALCPlanner] candidates: %zu",
+                 candidates_.size());
+    for (const auto& candidate : candidates_) {
+        RCLCPP_DEBUG(get_logger(),
+                     "[ALCPlanner] cand tau_id=%d euclid=%.2f graph_dist=%.2f "
+                     "lighthouse=%d cluster_size=%zu",
+                     candidate.tau_id, candidate.euclidean_dist,
+                     candidate.graph_dist,
+                     static_cast<int>(candidate.is_lighthouse),
+                     candidate.keyframe_ids.size());
     }
 
     if (graph_.robot_node_id < 0) {
