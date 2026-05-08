@@ -29,6 +29,7 @@ find_package(visualization_msgs REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 
 add_library(alc_planner_core
+  src/core/map_utils.cpp
   src/core/slam_graph_planner.cpp
   src/core/saliency_evaluator.cpp
   src/core/uncertainty_metrics.cpp
@@ -112,6 +113,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_trigger_policy test/test_trigger_policy.cpp)
   target_link_libraries(test_trigger_policy alc_planner_core)
+
+  ament_add_gtest(test_coverage test/test_coverage.cpp)
+  target_link_libraries(test_coverage alc_planner_core)
 endif()
 
 ament_package()
