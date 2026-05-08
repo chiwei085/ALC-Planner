@@ -26,11 +26,9 @@ ALCCandidate makeCandidate() {
     return candidate;
 }
 
-float expectedUBProbability(const Params& params,
-                            const ALCCandidate& candidate,
+float expectedUBProbability(const Params& params, const ALCCandidate& candidate,
                             const GraphState& graph) {
-    const float l_minus_ub =
-        candidate.graph_dist + candidate.euclidean_dist;
+    const float l_minus_ub = candidate.graph_dist + candidate.euclidean_dist;
     const float exp_factor =
         std::exp(-(l_minus_ub * l_minus_ub) / (params.cl * params.cl));
     float plc_sum = 0.0f;
@@ -149,7 +147,7 @@ TEST(RewardEvaluator, RewardUBExpDecayWithDistance) {
     EXPECT_GT(near_candidate.P_lc_ub, far_candidate.P_lc_ub);
 }
 
-TEST(RewardEvaluator, RewardUBZeroPLC) {
+TEST(RewardEvaluator, RewardUBFormula) {
     Params params;
     params.cv_L = 2.0f;
     params.cv_G = 4.0f;
@@ -157,8 +155,8 @@ TEST(RewardEvaluator, RewardUBZeroPLC) {
     params.ct = 0.2f;
 
     GraphState graph;
-    addNode(graph, 1, 0.6f, 0.4f, 0.0f);
-    addNode(graph, 2, 0.3f, 0.9f, 0.0f);
+    addNode(graph, 1, 0.6f, 0.4f, 0.35f);
+    addNode(graph, 2, 0.3f, 0.9f, 0.25f);
 
     ALCCandidate candidate = makeCandidate();
     candidate.keyframe_ids = {1, 2};
@@ -168,8 +166,7 @@ TEST(RewardEvaluator, RewardUBZeroPLC) {
     RewardEvaluator evaluator(params);
     evaluator.fillRewardUB(candidate, graph);
 
-    const float expected_p =
-        expectedUBProbability(params, candidate, graph);
+    const float expected_p = expectedUBProbability(params, candidate, graph);
     const float expected_delta_u = 4.0f;
     const float expected_reward = -0.2f * 3.0f + expected_p * expected_delta_u;
     EXPECT_NEAR(candidate.delta_U_ub, expected_delta_u, 1e-4f);
