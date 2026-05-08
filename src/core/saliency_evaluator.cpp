@@ -7,25 +7,38 @@
 namespace alc_planner
 {
 
+namespace
+{
+
+constexpr float kLoopClosurePriorRate = 0.5f;
+
+}  // namespace
+
 SaliencyEvaluator::SaliencyEvaluator(Params params) : params_(params) {}
 
-void SaliencyEvaluator::update(GraphState& graph) {
+void SaliencyEvaluator::update(const GraphState& graph,
+                               SaliencyState& saliency_state) {
     rebuildWordFrequency(graph);
+    saliency_state.keyframes.resize(graph.keyframes.size());
+    saliency_state.plc_calibration = loopClosureCalibration();
 
     const int total_nodes = static_cast<int>(graph.keyframes.size());
-    for (auto& [node_id, keyframe] : graph.keyframes) {
-        (void)node_id;
-        keyframe.saliency_local =
+    for (std::size_t i = 0; i < graph.keyframes.size(); ++i) {
+        const Keyframe& keyframe = graph.keyframes[i];
+        KeyframeSaliency& saliency = saliency_state.keyframes[i];
+        saliency.saliency_local =
             normalizeSL(static_cast<int>(keyframe.word_ids.size()));
-        keyframe.saliency_global = computeSG(keyframe.word_ids, total_nodes);
-        keyframe.plc_intrinsic =
-            std::tanh(params_.cv_L * keyframe.saliency_local) *
-            std::tanh(params_.cv_G * keyframe.saliency_global);
+        saliency.saliency_global = computeSG(keyframe.word_ids, total_nodes);
+        saliency.plc_intrinsic =
+            std::tanh(params_.cv_L * saliency.saliency_local) *
+            std::tanh(params_.cv_G * saliency.saliency_global);
     }
 
-    const auto robot_it = graph.keyframes.find(graph.robot_node_id);
-    if (robot_it != graph.keyframes.end()) {
-        latest_sl_ = robot_it->second.saliency_local;
+    if (graph.robot_ix >= 0 &&
+        graph.robot_ix < static_cast<int>(saliency_state.keyframes.size())) {
+        latest_sl_ =
+            saliency_state.keyframes[static_cast<std::size_t>(graph.robot_ix)]
+                .saliency_local;
     }
 }
 
@@ -33,6 +46,23 @@ void SaliencyEvaluator::observeWordsRecognized(const int count) {
     if (count > max_words_recognized_) {
         max_words_recognized_ = count;
     }
+}
+
+void SaliencyEvaluator::observeLoopClosureAttempt(const bool success) {
+    ++loop_closure_attempts_;
+    if (success) {
+        ++loop_closure_successes_;
+    }
+}
+
+float SaliencyEvaluator::loopClosureCalibration() const {
+    if (loop_closure_attempts_ <= 0) {
+        return 1.0f;
+    }
+
+    const float observed_rate = static_cast<float>(loop_closure_successes_) /
+                                static_cast<float>(loop_closure_attempts_);
+    return std::clamp(observed_rate / kLoopClosurePriorRate, 0.5f, 2.0f);
 }
 
 float SaliencyEvaluator::normalizeSL(const int word_count) const {
@@ -89,16 +119,16 @@ float SaliencyEvaluator::computeSG(const std::vector<int32_t>& word_ids,
 }
 
 void SaliencyEvaluator::rebuildWordFrequency(const GraphState& graph) {
-    word_node_count_.clear();
-
-    for (const auto& [node_id, keyframe] : graph.keyframes) {
-        (void)node_id;
+    for (std::size_t i = last_processed_kf_count_; i < graph.keyframes.size();
+         ++i) {
+        const Keyframe& keyframe = graph.keyframes[i];
         std::unordered_set<int32_t> unique_words(keyframe.word_ids.begin(),
                                                  keyframe.word_ids.end());
         for (const int32_t word_id : unique_words) {
             ++word_node_count_[word_id];
         }
     }
+    last_processed_kf_count_ = graph.keyframes.size();
 }
 
 }  // namespace alc_planner
