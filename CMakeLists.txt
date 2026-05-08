@@ -109,6 +109,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_bnb_selector test/test_bnb_selector.cpp)
   target_link_libraries(test_bnb_selector alc_planner_core)
+
+  ament_add_gtest(test_trigger_policy test/test_trigger_policy.cpp)
+  target_link_libraries(test_trigger_policy alc_planner_core)
 endif()
 
 ament_package()
