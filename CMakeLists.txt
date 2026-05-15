@@ -38,7 +38,6 @@ add_library(alc_planner_core
   src/core/bnb_selector.cpp
   src/core/path_planner.cpp
   src/core/trigger_policy.cpp
-  src/node/planner_node.cpp
 )
 
 target_include_directories(alc_planner_core
@@ -51,6 +50,19 @@ target_link_libraries(alc_planner_core Eigen3::Eigen)
 ament_target_dependencies(
   alc_planner_core
   eigen3_cmake_module
+  nav_msgs
+)
+
+add_library(alc_planner_node_lib src/node/planner_node.cpp)
+target_include_directories(alc_planner_node_lib
+  PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_compile_features(alc_planner_node_lib PUBLIC cxx_std_17)
+target_link_libraries(alc_planner_node_lib alc_planner_core)
+ament_target_dependencies(
+  alc_planner_node_lib
   geometry_msgs
   nav2_msgs
   nav_msgs
@@ -67,7 +79,7 @@ ament_target_dependencies(
 
 add_executable(alc_planner_node src/node/alc_planner_node_main.cpp)
 target_compile_features(alc_planner_node PUBLIC cxx_std_17)
-target_link_libraries(alc_planner_node alc_planner_core)
+target_link_libraries(alc_planner_node alc_planner_node_lib)
 ament_target_dependencies(alc_planner_node rclcpp)
 
 add_executable(db_publisher_node test/db_publisher_node.cpp)
@@ -77,10 +89,15 @@ target_include_directories(db_publisher_node PRIVATE ${SQLITE3_INCLUDE_DIRS})
 ament_target_dependencies(db_publisher_node nav_msgs rclcpp rtabmap_msgs)
 
 install(
-  TARGETS
-  alc_planner_core
-  alc_planner_node
-  db_publisher_node
+  TARGETS alc_planner_core
+  EXPORT export_alc_planner_core
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  TARGETS alc_planner_node_lib alc_planner_node db_publisher_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -89,6 +106,9 @@ install(
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch docs DESTINATION share/${PROJECT_NAME})
 install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
+
+ament_export_targets(export_alc_planner_core HAS_LIBRARY_TARGET)
+ament_export_dependencies(eigen3_cmake_module Eigen3 nav_msgs)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
