@@ -75,7 +75,7 @@ ALCCandidate makeCandidate(const GraphState& graph, const int tau_ix,
 }
 
 void fillRewardUBs(std::vector<ALCCandidate>& candidates, const Params& params,
-                   const GraphState& graph,
+                   const GraphState&,
                    const SaliencyState& saliency_state) {
     RewardEvaluator evaluator(params);
     for (auto& candidate : candidates) {
