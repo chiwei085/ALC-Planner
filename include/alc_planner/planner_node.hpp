@@ -38,6 +38,9 @@ private:
     void checkLighthouse();
     void sendNavGoal(const ALCCandidate& target);
     void sendSpinGoal();
+    Params declarePlannerParams();
+    void startNavigationTimeout();
+    void cancelNavigationTimeout();
     float computeCoverageRatio() const;
     void logGraphState() const;
     int nodeIdFromIx(int ix) const;
@@ -58,6 +61,8 @@ private:
     bool has_lighthouse_ = false;
     bool alc_rotation_attempt_active_ = false;
     bool alc_rotation_observed_loop_closure_ = false;
+    double navigation_timeout_sec_;
+    bool use_approach_heading_;
     rclcpp::Time last_alc_time_{0, 0, RCL_ROS_TIME};
     rclcpp::Time last_map_data_stamp_{0, 0, RCL_ROS_TIME};
 
@@ -65,6 +70,7 @@ private:
     using Spin = nav2_msgs::action::Spin;
     rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
     rclcpp_action::Client<Spin>::SharedPtr spin_client_;
+    rclcpp::TimerBase::SharedPtr nav_timeout_timer_;
 
     rclcpp::Subscription<rtabmap_msgs::msg::MapData>::SharedPtr sub_map_data_;
     rclcpp::Subscription<rtabmap_msgs::msg::Info>::SharedPtr sub_info_;

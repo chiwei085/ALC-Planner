@@ -10,6 +10,10 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+if(CMAKE_COMPILER_IS_GNUCXX)
+  add_compile_options(-Wno-psabi)
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
@@ -133,6 +137,10 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_trigger_policy test/test_trigger_policy.cpp)
   target_link_libraries(test_trigger_policy alc_planner_core)
+
+  ament_add_gtest(test_planner_node_params test/test_planner_node_params.cpp)
+  target_link_libraries(test_planner_node_params alc_planner_node_lib)
+  ament_target_dependencies(test_planner_node_params rclcpp)
 
   ament_add_gtest(test_coverage test/test_coverage.cpp)
   target_link_libraries(test_coverage alc_planner_core)

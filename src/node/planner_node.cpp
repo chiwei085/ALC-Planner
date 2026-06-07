@@ -55,6 +55,9 @@ std::optional<int> extractWordsRecognized(const rtabmap_msgs::msg::Info& msg) {
 }
 
 constexpr float kDefaultVariance = 1.0f;
+constexpr float kMinApproachHeadingDistance = 1.0e-3f;
+constexpr double kDefaultNavigationTimeoutSec = 120.0;
+constexpr bool kDefaultUseApproachHeading = true;
 
 float scalarVarianceFromInformation(const std::array<double, 36>& information) {
     constexpr int kDiagonalIndices[6] = {0, 7, 14, 21, 28, 35};
@@ -81,6 +84,7 @@ float scalarVarianceFromInformation(const std::array<double, 36>& information) {
 
 ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
     : rclcpp::Node("alc_planner", opts),
+      params_(declarePlannerParams()),
       saliency_eval_(params_),
       candidate_builder_(params_),
       reward_evaluator_(params_),
@@ -99,6 +103,51 @@ ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
     sub_map_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
         "/map", rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMap, this, std::placeholders::_1));
+}
+
+Params ALCPlannerNode::declarePlannerParams() {
+    Params params;
+
+    const auto declare_float = [this](const std::string& name,
+                                      const float default_value) {
+        return static_cast<float>(declare_parameter<double>(
+            name, static_cast<double>(default_value)));
+    };
+    const auto declare_int = [this](const std::string& name,
+                                    const int default_value) {
+        return declare_parameter<int>(name, default_value);
+    };
+
+    params.cv_L = declare_float("cv_L", params.cv_L);
+    params.cv_G = declare_float("cv_G", params.cv_G);
+    params.cs_lighthouse = declare_float("cs_lighthouse", params.cs_lighthouse);
+    params.d_min_lighthouse =
+        declare_float("d_min_lighthouse", params.d_min_lighthouse);
+    params.cl = declare_float("cl", params.cl);
+    params.ct = declare_float("ct", params.ct);
+    params.cE = declare_float("cE", params.cE);
+    params.cG = declare_float("cG", params.cG);
+    params.cs = declare_float("cs", params.cs);
+    params.eps_dbscan = declare_float("eps_dbscan", params.eps_dbscan);
+    params.min_pts = declare_int("min_pts", params.min_pts);
+    params.theta_max = declare_float("theta_max", params.theta_max);
+    params.lambda_decay = declare_float("lambda_decay", params.lambda_decay);
+    params.alpha_cov = declare_float("alpha_cov", params.alpha_cov);
+    params.tau_min_revisit =
+        declare_int("tau_min_revisit", params.tau_min_revisit);
+    params.plc_min_revisit =
+        declare_float("plc_min_revisit", params.plc_min_revisit);
+    params.map_dist_min_revisit =
+        declare_float("map_dist_min_revisit", params.map_dist_min_revisit);
+    params.use_variance_uncertainty = declare_parameter<bool>(
+        "use_variance_uncertainty", params.use_variance_uncertainty);
+
+    navigation_timeout_sec_ = declare_parameter<double>(
+        "navigation_timeout_sec", kDefaultNavigationTimeoutSec);
+    use_approach_heading_ = declare_parameter<bool>("use_approach_heading",
+                                                    kDefaultUseApproachHeading);
+
+    return params;
 }
 
 void ALCPlannerNode::onMapData(
@@ -301,10 +350,24 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
     goal.pose.pose.position.x = target.rep_pose.position.x();
     goal.pose.pose.position.y = target.rep_pose.position.y();
     goal.pose.pose.position.z = target.rep_pose.position.z();
-    goal.pose.pose.orientation.x = target.rep_pose.orientation.x();
-    goal.pose.pose.orientation.y = target.rep_pose.orientation.y();
-    goal.pose.pose.orientation.z = target.rep_pose.orientation.z();
-    goal.pose.pose.orientation.w = target.rep_pose.orientation.w();
+    Eigen::Quaternionf goal_orientation = target.rep_pose.orientation;
+    if (use_approach_heading_ && graph_.robot_ix >= 0 &&
+        graph_.robot_ix < static_cast<int>(graph_.keyframes.size())) {
+        const Pose6f& robot_pose =
+            graph_.keyframes[static_cast<std::size_t>(graph_.robot_ix)].pose;
+        const Eigen::Vector3f delta =
+            target.rep_pose.position - robot_pose.position;
+        if (delta.head<2>().norm() > kMinApproachHeadingDistance) {
+            const float yaw = std::atan2(delta.y(), delta.x());
+            goal_orientation = Eigen::Quaternionf(
+                Eigen::AngleAxisf(yaw, Eigen::Vector3f::UnitZ()));
+        }
+    }
+    goal_orientation.normalize();
+    goal.pose.pose.orientation.x = goal_orientation.x();
+    goal.pose.pose.orientation.y = goal_orientation.y();
+    goal.pose.pose.orientation.z = goal_orientation.z();
+    goal.pose.pose.orientation.w = goal_orientation.w();
 
     RCLCPP_INFO(get_logger(),
                 "[ALCPlanner] sending nav goal: tau_id=%d x=%.2f y=%.2f",
@@ -320,9 +383,11 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
             return;
         }
         if (handle) {
+            self->startNavigationTimeout();
             return;
         }
 
+        self->cancelNavigationTimeout();
         (void)self->slam_graph_planner_.onNavigationResult(false);
         self->best_candidate_.reset();
         RCLCPP_WARN(self->get_logger(),
@@ -333,6 +398,7 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
         if (!self) {
             return;
         }
+        self->cancelNavigationTimeout();
         const bool success =
             result.code == rclcpp_action::ResultCode::SUCCEEDED;
         const bool should_spin =
@@ -350,6 +416,42 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
     };
 
     nav_client_->async_send_goal(goal, options);
+}
+
+void ALCPlannerNode::startNavigationTimeout() {
+    cancelNavigationTimeout();
+    if (navigation_timeout_sec_ <= 0.0) {
+        return;
+    }
+
+    const std::weak_ptr<ALCPlannerNode> weak_self =
+        std::static_pointer_cast<ALCPlannerNode>(shared_from_this());
+    nav_timeout_timer_ = create_wall_timer(
+        std::chrono::duration<double>(navigation_timeout_sec_), [weak_self]() {
+            const auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            self->cancelNavigationTimeout();
+            if (self->slam_graph_planner_.state() !=
+                PlannerState::NAVIGATING_TO_ALC) {
+                return;
+            }
+
+            (void)self->slam_graph_planner_.onNavigationResult(false);
+            self->best_candidate_.reset();
+            RCLCPP_WARN(self->get_logger(),
+                        "[ALCPlanner] navigation to ALC target timed out "
+                        "after %.1f seconds",
+                        self->navigation_timeout_sec_);
+        });
+}
+
+void ALCPlannerNode::cancelNavigationTimeout() {
+    if (nav_timeout_timer_) {
+        nav_timeout_timer_->cancel();
+        nav_timeout_timer_.reset();
+    }
 }
 
 void ALCPlannerNode::sendSpinGoal() {
