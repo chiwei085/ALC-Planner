@@ -36,7 +36,8 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
          rclcpp::Parameter("map_dist_min_revisit", 0.75),
          rclcpp::Parameter("use_variance_uncertainty", true),
          rclcpp::Parameter("navigation_timeout_sec", 37.0),
-         rclcpp::Parameter("use_approach_heading", false)});
+         rclcpp::Parameter("use_approach_heading", false),
+         rclcpp::Parameter("planner_event_topic", "/test/planner_events")});
 
     const auto node = std::make_shared<ALCPlannerNode>(options);
 
@@ -62,6 +63,8 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
     EXPECT_NEAR(node->get_parameter("navigation_timeout_sec").as_double(), 37.0,
                 1e-6);
     EXPECT_FALSE(node->get_parameter("use_approach_heading").as_bool());
+    EXPECT_EQ(node->get_parameter("planner_event_topic").as_string(),
+              "/test/planner_events");
 
     rclcpp::shutdown();
 }
