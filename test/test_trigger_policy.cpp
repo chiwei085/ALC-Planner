@@ -120,6 +120,25 @@ TEST(SLAMGraphPlanner, EvaluateWithoutTriggerReturnsNullopt) {
     EXPECT_EQ(planner.state(), PlannerState::EVALUATING);
 }
 
+TEST(SLAMGraphPlanner, RewardBonusCanTriggerDegradedExplorationCandidate) {
+    Params params;
+    params.theta_max = 1.0f;
+    params.lambda_decay = 0.0f;
+    params.alpha_cov = 0.0f;
+
+    SLAMGraphPlanner planner(params);
+    const auto without_bonus =
+        planner.onEvaluationComplete(makeCandidate(0.6f), 0.0, 1.0f, 40);
+    EXPECT_FALSE(without_bonus.has_value());
+    EXPECT_EQ(planner.state(), PlannerState::EVALUATING);
+
+    const auto with_bonus =
+        planner.onEvaluationComplete(makeCandidate(0.6f), 0.0, 1.0f, 40, 0.5f);
+    ASSERT_TRUE(with_bonus.has_value());
+    EXPECT_EQ(with_bonus->tau_ix, 20);
+    EXPECT_EQ(planner.state(), PlannerState::NAVIGATING_TO_ALC);
+}
+
 TEST(SLAMGraphPlanner, TauFloorSuppressesNearCandidate) {
     Params params;
     params.theta_max = 0.1f;
@@ -206,7 +225,8 @@ TEST(SLAMGraphPlanner, EvaluateWithNoBestReturnsNullopt) {
     Params params;
     SLAMGraphPlanner planner(params);
 
-    const auto result = planner.onEvaluationComplete(std::nullopt, 0.0, 1.0f, 40);
+    const auto result =
+        planner.onEvaluationComplete(std::nullopt, 0.0, 1.0f, 40);
 
     EXPECT_FALSE(result.has_value());
     EXPECT_EQ(planner.state(), PlannerState::EVALUATING);

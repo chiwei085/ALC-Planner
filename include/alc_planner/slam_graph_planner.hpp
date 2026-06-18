@@ -22,7 +22,7 @@ public:
 
     [[nodiscard]] std::optional<ALCCandidate> onEvaluationComplete(
         const std::optional<ALCCandidate>& best, double elapsed_seconds,
-        float coverage_ratio, int robot_ix);
+        float coverage_ratio, int robot_ix, float reward_bonus = 0.0f);
 
     [[nodiscard]] bool onNavigationResult(bool success);
     void onRotationComplete();

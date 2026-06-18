@@ -60,6 +60,14 @@ constexpr double kDefaultNavigationTimeoutSec = 120.0;
 constexpr bool kDefaultUseApproachHeading = true;
 constexpr const char* kDefaultPlannerEventTopic = "/planner/events";
 
+std::optional<std::string> jsonStringField(const nlohmann::json& payload,
+                                           const std::string& key) {
+    if (!payload.contains(key) || !payload[key].is_string()) {
+        return std::nullopt;
+    }
+    return payload[key].get<std::string>();
+}
+
 float scalarVarianceFromInformation(const std::array<double, 36>& information) {
     constexpr int kDiagonalIndices[6] = {0, 7, 14, 21, 28, 35};
 
@@ -106,6 +114,10 @@ ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
     sub_map_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
         "/map", rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMap, this, std::placeholders::_1));
+    sub_planner_event_ = create_subscription<std_msgs::msg::String>(
+        planner_event_topic_, 10,
+        std::bind(&ALCPlannerNode::onPlannerEvent, this,
+                  std::placeholders::_1));
 }
 
 Params ALCPlannerNode::declarePlannerParams() {
@@ -147,6 +159,12 @@ Params ALCPlannerNode::declarePlannerParams() {
 
     navigation_timeout_sec_ = declare_parameter<double>(
         "navigation_timeout_sec", kDefaultNavigationTimeoutSec);
+    degraded_exploration_alc_bonus_ =
+        declare_parameter<double>("degraded_exploration_alc_bonus", 0.0);
+    degraded_exploration_window_sec_ =
+        declare_parameter<double>("degraded_exploration_window_sec", 60.0);
+    degraded_exploration_min_events_ =
+        declare_parameter<int>("degraded_exploration_min_events", 3);
     use_approach_heading_ = declare_parameter<bool>("use_approach_heading",
                                                     kDefaultUseApproachHeading);
     planner_event_topic_ = declare_parameter<std::string>(
@@ -187,8 +205,14 @@ void ALCPlannerNode::onMapData(
                                ? std::numeric_limits<double>::infinity()
                                : (now() - last_alc_time_).seconds();
     const float coverage_ratio = computeCoverageRatio();
+    const double now_sec = now().seconds();
+    const float reward_bonus =
+        degradedExplorationActive(now_sec)
+            ? static_cast<float>(degraded_exploration_alc_bonus_)
+            : 0.0f;
     const auto to_navigate = slam_graph_planner_.onEvaluationComplete(
-        best_candidate_, elapsed, coverage_ratio, graph_.robot_ix);
+        best_candidate_, elapsed, coverage_ratio, graph_.robot_ix,
+        reward_bonus);
     if (to_navigate.has_value()) {
         sendNavGoal(*to_navigate);
     }
@@ -230,6 +254,40 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
 void ALCPlannerNode::onMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
     occupancy_map_ = msg;
     cached_coverage_ratio_ = estimateCoverageRatio(occupancy_map_.get());
+}
+
+void ALCPlannerNode::onPlannerEvent(
+    const std_msgs::msg::String::SharedPtr msg) {
+    if (!msg) {
+        return;
+    }
+    try {
+        const auto payload = nlohmann::json::parse(msg->data);
+        const std::string event =
+            jsonStringField(payload, "event").value_or(std::string{});
+        if (event.rfind("alc_", 0) == 0) {
+            return;
+        }
+        const std::string failure_class =
+            jsonStringField(payload, "failure_class").value_or(std::string{});
+        const bool degraded = event == "no_frontier_candidate" ||
+                              failure_class == "global_path_blocked" ||
+                              failure_class == "local_hazard" ||
+                              failure_class == "reverse_unsafe" ||
+                              failure_class == "stall_or_slip" ||
+                              failure_class == "recovery_failed";
+        if (!degraded) {
+            return;
+        }
+        double event_time = now().seconds();
+        if (payload.contains("time_sec")) {
+            event_time = static_cast<double>(payload[std::string("time_sec")]);
+        }
+        degraded_exploration_event_times_.push_back(event_time);
+        pruneDegradationEvents(now().seconds());
+    }
+    catch (const nlohmann::json::parse_error&) {
+    }
 }
 
 void ALCPlannerNode::ingestNodes(const rtabmap_msgs::msg::MapData& msg) {
@@ -564,6 +622,29 @@ void ALCPlannerNode::publishAlcFinished(const std::string& phase,
     std_msgs::msg::String msg;
     msg.data = payload.dump();
     event_pub_->publish(msg);
+}
+
+void ALCPlannerNode::pruneDegradationEvents(const double now_sec) {
+    if (degraded_exploration_window_sec_ <= 0.0) {
+        degraded_exploration_event_times_.clear();
+        return;
+    }
+    degraded_exploration_event_times_.erase(
+        std::remove_if(degraded_exploration_event_times_.begin(),
+                       degraded_exploration_event_times_.end(),
+                       [this, now_sec](const double event_sec) {
+                           return now_sec - event_sec >
+                                  degraded_exploration_window_sec_;
+                       }),
+        degraded_exploration_event_times_.end());
+}
+
+bool ALCPlannerNode::degradedExplorationActive(const double now_sec) {
+    pruneDegradationEvents(now_sec);
+    return degraded_exploration_alc_bonus_ > 0.0 &&
+           degraded_exploration_min_events_ > 0 &&
+           degraded_exploration_event_times_.size() >=
+               static_cast<std::size_t>(degraded_exploration_min_events_);
 }
 
 float ALCPlannerNode::computeCoverageRatio() const {

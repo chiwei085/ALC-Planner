@@ -36,6 +36,9 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
          rclcpp::Parameter("map_dist_min_revisit", 0.75),
          rclcpp::Parameter("use_variance_uncertainty", true),
          rclcpp::Parameter("navigation_timeout_sec", 37.0),
+         rclcpp::Parameter("degraded_exploration_alc_bonus", 0.35),
+         rclcpp::Parameter("degraded_exploration_window_sec", 42.0),
+         rclcpp::Parameter("degraded_exploration_min_events", 5),
          rclcpp::Parameter("use_approach_heading", false),
          rclcpp::Parameter("planner_event_topic", "/test/planner_events")});
 
@@ -62,6 +65,14 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
     EXPECT_TRUE(node->get_parameter("use_variance_uncertainty").as_bool());
     EXPECT_NEAR(node->get_parameter("navigation_timeout_sec").as_double(), 37.0,
                 1e-6);
+    EXPECT_NEAR(
+        node->get_parameter("degraded_exploration_alc_bonus").as_double(), 0.35,
+        1e-6);
+    EXPECT_NEAR(
+        node->get_parameter("degraded_exploration_window_sec").as_double(),
+        42.0, 1e-6);
+    EXPECT_EQ(node->get_parameter("degraded_exploration_min_events").as_int(),
+              5);
     EXPECT_FALSE(node->get_parameter("use_approach_heading").as_bool());
     EXPECT_EQ(node->get_parameter("planner_event_topic").as_string(),
               "/test/planner_events");
