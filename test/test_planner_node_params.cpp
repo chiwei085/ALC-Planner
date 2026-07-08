@@ -35,6 +35,11 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
          rclcpp::Parameter("plc_min_revisit", 0.02),
          rclcpp::Parameter("map_dist_min_revisit", 0.75),
          rclcpp::Parameter("use_variance_uncertainty", true),
+         rclcpp::Parameter("rotation_risk_enabled", true),
+         rclcpp::Parameter("rotation_risk_weight", 0.2),
+         rclcpp::Parameter("rotation_risk_reference_det", 1.0e-5),
+         rclcpp::Parameter("rotation_risk_max_lambda", 1.5),
+         rclcpp::Parameter("rotation_risk_max_yaw_rad", 1.57),
          rclcpp::Parameter("navigation_timeout_sec", 37.0),
          rclcpp::Parameter("degraded_exploration_alc_bonus", 0.35),
          rclcpp::Parameter("degraded_exploration_window_sec", 42.0),
@@ -63,6 +68,15 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
     EXPECT_NEAR(node->get_parameter("map_dist_min_revisit").as_double(), 0.75,
                 1e-6);
     EXPECT_TRUE(node->get_parameter("use_variance_uncertainty").as_bool());
+    EXPECT_TRUE(node->get_parameter("rotation_risk_enabled").as_bool());
+    EXPECT_NEAR(node->get_parameter("rotation_risk_weight").as_double(), 0.2,
+                1e-6);
+    EXPECT_NEAR(node->get_parameter("rotation_risk_reference_det").as_double(),
+                1.0e-5, 1e-9);
+    EXPECT_NEAR(node->get_parameter("rotation_risk_max_lambda").as_double(),
+                1.5, 1e-6);
+    EXPECT_NEAR(node->get_parameter("rotation_risk_max_yaw_rad").as_double(),
+                1.57, 1e-6);
     EXPECT_NEAR(node->get_parameter("navigation_timeout_sec").as_double(), 37.0,
                 1e-6);
     EXPECT_NEAR(

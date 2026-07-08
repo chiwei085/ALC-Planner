@@ -80,6 +80,10 @@ struct ALCCandidate
     float P_lc_ub = 0.0f;
     float reward = 0.0f;
     float reward_ub = 0.0f;
+    float approach_yaw_delta = 0.0f;
+    float pose_uncertainty_lambda = 0.0f;
+    float rotation_risk = 0.0f;
+    float reward_before_rotation_risk = 0.0f;
     bool is_lighthouse = false;
     float best_plc_intrinsic = 0.0f;
 };
@@ -104,6 +108,11 @@ struct Params
     float plc_min_revisit = 0.05f;
     float map_dist_min_revisit = 1.0f;
     bool use_variance_uncertainty = false;
+    bool rotation_risk_enabled = false;
+    float rotation_risk_weight = 1.0f;
+    float rotation_risk_reference_det = 1.0e-6f;
+    float rotation_risk_max_lambda = 5.0f;
+    float rotation_risk_max_yaw_rad = 3.14159265358979323846f;
 };
 
 }  // namespace alc_planner

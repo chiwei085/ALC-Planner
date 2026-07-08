@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "alc_planner/map_utils.hpp"
+#include "alc_planner/uncertainty_metrics.hpp"
 
 namespace alc_planner
 {
@@ -89,6 +90,31 @@ float scalarVarianceFromInformation(const std::array<double, 36>& information) {
     return static_cast<float>(reciprocal_sum / static_cast<double>(count));
 }
 
+float yawFromPose(const Pose6f& pose) {
+    const Eigen::Quaternionf q = pose.orientation.normalized();
+    return std::atan2(2.0f * (q.w() * q.z() + q.x() * q.y()),
+                      1.0f - 2.0f * (q.y() * q.y() + q.z() * q.z()));
+}
+
+float normalizeYawDelta(float delta) {
+    while (delta > static_cast<float>(M_PI)) {
+        delta -= static_cast<float>(2.0 * M_PI);
+    }
+    while (delta < static_cast<float>(-M_PI)) {
+        delta += static_cast<float>(2.0 * M_PI);
+    }
+    return delta;
+}
+
+float approachYawDelta(const Pose6f& robot_pose, const Pose6f& target_pose) {
+    const Eigen::Vector3f delta = target_pose.position - robot_pose.position;
+    float approach_yaw = yawFromPose(target_pose);
+    if (delta.head<2>().norm() > kMinApproachHeadingDistance) {
+        approach_yaw = std::atan2(delta.y(), delta.x());
+    }
+    return normalizeYawDelta(approach_yaw - yawFromPose(robot_pose));
+}
+
 }  // namespace
 
 ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
@@ -114,6 +140,11 @@ ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
     sub_map_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
         "/map", rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMap, this, std::placeholders::_1));
+    sub_localization_pose_ =
+        create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+            "localization_pose", rclcpp::SensorDataQoS(),
+            std::bind(&ALCPlannerNode::onLocalizationPose, this,
+                      std::placeholders::_1));
     sub_planner_event_ = create_subscription<std_msgs::msg::String>(
         planner_event_topic_, 10,
         std::bind(&ALCPlannerNode::onPlannerEvent, this,
@@ -156,6 +187,16 @@ Params ALCPlannerNode::declarePlannerParams() {
         declare_float("map_dist_min_revisit", params.map_dist_min_revisit);
     params.use_variance_uncertainty = declare_parameter<bool>(
         "use_variance_uncertainty", params.use_variance_uncertainty);
+    params.rotation_risk_enabled = declare_parameter<bool>(
+        "rotation_risk_enabled", params.rotation_risk_enabled);
+    params.rotation_risk_weight =
+        declare_float("rotation_risk_weight", params.rotation_risk_weight);
+    params.rotation_risk_reference_det = declare_float(
+        "rotation_risk_reference_det", params.rotation_risk_reference_det);
+    params.rotation_risk_max_lambda = declare_float(
+        "rotation_risk_max_lambda", params.rotation_risk_max_lambda);
+    params.rotation_risk_max_yaw_rad = declare_float(
+        "rotation_risk_max_yaw_rad", params.rotation_risk_max_yaw_rad);
 
     navigation_timeout_sec_ = declare_parameter<double>(
         "navigation_timeout_sec", kDefaultNavigationTimeoutSec);
@@ -184,6 +225,17 @@ void ALCPlannerNode::onMapData(
     saliency_eval_.update(graph_, saliency_state_);
     checkLighthouse();
     candidates_ = candidate_builder_.build(graph_, saliency_state_);
+    if (graph_.robot_ix >= 0 &&
+        graph_.robot_ix < static_cast<int>(graph_.keyframes.size())) {
+        const Pose6f& robot_pose =
+            graph_.keyframes[static_cast<std::size_t>(graph_.robot_ix)].pose;
+        for (auto& candidate : candidates_) {
+            candidate.approach_yaw_delta =
+                approachYawDelta(robot_pose, candidate.rep_pose);
+            candidate.pose_uncertainty_lambda =
+                current_pose_uncertainty_lambda_;
+        }
+    }
     for (auto& candidate : candidates_) {
         reward_evaluator_.fillRewardUB(candidate, saliency_state_);
     }
@@ -254,6 +306,17 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
 void ALCPlannerNode::onMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
     occupancy_map_ = msg;
     cached_coverage_ratio_ = estimateCoverageRatio(occupancy_map_.get());
+}
+
+void ALCPlannerNode::onLocalizationPose(
+    const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
+    if (!msg) {
+        return;
+    }
+
+    current_pose_uncertainty_lambda_ =
+        UncertaintyMetrics::rotationRiskLambdaFromCovariance(
+            msg->pose.covariance, params_);
 }
 
 void ALCPlannerNode::onPlannerEvent(
@@ -602,6 +665,9 @@ void ALCPlannerNode::publishAlcStarted(const ALCCandidate& target) {
         {"tau_id", nodeIdFromIx(target.tau_ix)},
         {"goal_xy", nlohmann::json::array({target.rep_pose.position.x(),
                                            target.rep_pose.position.y()})},
+        {"approach_yaw_delta", target.approach_yaw_delta},
+        {"pose_uncertainty_lambda", target.pose_uncertainty_lambda},
+        {"rotation_risk", target.rotation_risk},
     };
     std_msgs::msg::String msg;
     msg.data = payload.dump();
@@ -698,15 +764,17 @@ void ALCPlannerNode::logGraphState() const {
                  candidates_.size());
     for (const auto& candidate : candidates_) {
         const int tau_node_id = nodeIdFromIx(candidate.tau_ix);
-        RCLCPP_DEBUG(get_logger(),
-                     "[ALCPlanner] cand tau_id=%d euclid=%.2f graph_dist=%.2f "
-                     "graph_var=%.4f reward_ub=%.4f lighthouse=%d "
-                     "cluster_size=%zu",
-                     tau_node_id, candidate.euclidean_dist,
-                     candidate.graph_dist, candidate.graph_dist_var,
-                     candidate.reward_ub,
-                     static_cast<int>(candidate.is_lighthouse),
-                     candidate.keyframe_ixs.size());
+        RCLCPP_DEBUG(
+            get_logger(),
+            "[ALCPlanner] cand tau_id=%d euclid=%.2f graph_dist=%.2f "
+            "graph_var=%.4f reward_ub=%.4f lighthouse=%d "
+            "cluster_size=%zu yaw_delta=%.3f lambda=%.3f "
+            "rotation_risk=%.3f",
+            tau_node_id, candidate.euclidean_dist, candidate.graph_dist,
+            candidate.graph_dist_var, candidate.reward_ub,
+            static_cast<int>(candidate.is_lighthouse),
+            candidate.keyframe_ixs.size(), candidate.approach_yaw_delta,
+            candidate.pose_uncertainty_lambda, candidate.rotation_risk);
     }
 
     if (graph_.robot_ix < 0) {

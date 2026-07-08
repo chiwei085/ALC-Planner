@@ -369,4 +369,104 @@ TEST(RewardEvaluator, RewardUsesCalibratedPLCWithoutMutatingIntrinsic) {
     EXPECT_LE(calibrated_candidate.P_lc, 1.0f);
 }
 
+TEST(RewardEvaluator, RotationRiskDisabledLeavesRewardUnchanged) {
+    Params params;
+    params.rotation_risk_enabled = false;
+    params.cl = 8.0f;
+
+    GraphState graph;
+    SaliencyState saliency_state;
+    const int ix = addNode(graph, saliency_state, 1, 0.8f);
+
+    ALCCandidate candidate = makeCandidate();
+    candidate.keyframe_ixs = {ix};
+    candidate.graph_dist = 8.0f;
+    candidate.map_dist = 4.0f;
+    candidate.approach_yaw_delta = 3.1415926f;
+    candidate.pose_uncertainty_lambda = 5.0f;
+
+    RewardEvaluator evaluator(params);
+    evaluator.fillReward(candidate, saliency_state);
+
+    EXPECT_FLOAT_EQ(candidate.rotation_risk, 0.0f);
+    EXPECT_NEAR(candidate.reward, candidate.reward_before_rotation_risk, 1e-4f);
+}
+
+TEST(RewardEvaluator, RotationRiskZeroLambdaLeavesRewardUnchanged) {
+    Params params;
+    params.rotation_risk_enabled = true;
+
+    GraphState graph;
+    SaliencyState saliency_state;
+    ALCCandidate candidate = makeCandidate();
+    candidate.graph_dist = 6.0f;
+    candidate.map_dist = 3.0f;
+    candidate.approach_yaw_delta = 1.0f;
+    candidate.pose_uncertainty_lambda = 0.0f;
+
+    RewardEvaluator evaluator(params);
+    evaluator.fillReward(candidate, saliency_state);
+
+    EXPECT_FLOAT_EQ(candidate.rotation_risk, 0.0f);
+    EXPECT_NEAR(candidate.reward, candidate.reward_before_rotation_risk, 1e-4f);
+}
+
+TEST(RewardEvaluator, HigherYawDeltaLowersRewardMore) {
+    Params params;
+    params.rotation_risk_enabled = true;
+    params.rotation_risk_max_yaw_rad = 2.0f;
+
+    GraphState graph;
+    SaliencyState saliency_state;
+
+    ALCCandidate low_turn = makeCandidate();
+    low_turn.graph_dist = 6.0f;
+    low_turn.map_dist = 3.0f;
+    low_turn.approach_yaw_delta = 0.5f;
+    low_turn.pose_uncertainty_lambda = 2.0f;
+
+    ALCCandidate high_turn = low_turn;
+    high_turn.approach_yaw_delta = 1.5f;
+
+    RewardEvaluator evaluator(params);
+    evaluator.fillReward(low_turn, saliency_state);
+    evaluator.fillReward(high_turn, saliency_state);
+
+    EXPECT_LT(low_turn.rotation_risk, high_turn.rotation_risk);
+    EXPECT_GT(low_turn.reward, high_turn.reward);
+}
+
+TEST(RewardEvaluator, StrongUtilityCanStillBeatLowerRiskCandidate) {
+    Params params;
+    params.rotation_risk_enabled = true;
+    params.rotation_risk_max_yaw_rad = 3.1415926f;
+    params.cl = 20.0f;
+
+    GraphState graph;
+    SaliencyState saliency_state;
+    const int weak_ix = addNode(graph, saliency_state, 1, 0.15f);
+    const int strong_ix = addNode(graph, saliency_state, 2, 0.9f);
+
+    ALCCandidate low_risk = makeCandidate();
+    low_risk.keyframe_ixs = {weak_ix};
+    low_risk.graph_dist = 5.0f;
+    low_risk.map_dist = 3.0f;
+    low_risk.approach_yaw_delta = 0.1f;
+    low_risk.pose_uncertainty_lambda = 0.5f;
+
+    ALCCandidate high_risk_strong_utility = makeCandidate();
+    high_risk_strong_utility.keyframe_ixs = {strong_ix};
+    high_risk_strong_utility.graph_dist = 12.0f;
+    high_risk_strong_utility.map_dist = 3.0f;
+    high_risk_strong_utility.approach_yaw_delta = 2.5f;
+    high_risk_strong_utility.pose_uncertainty_lambda = 0.5f;
+
+    RewardEvaluator evaluator(params);
+    evaluator.fillReward(low_risk, saliency_state);
+    evaluator.fillReward(high_risk_strong_utility, saliency_state);
+
+    EXPECT_GT(high_risk_strong_utility.rotation_risk, low_risk.rotation_risk);
+    EXPECT_GT(high_risk_strong_utility.reward, low_risk.reward);
+}
+
 }  // namespace alc_planner

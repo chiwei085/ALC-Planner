@@ -16,6 +16,9 @@ public:
     void fillReward(ALCCandidate& candidate,
                     const SaliencyState& saliency_state) const;
 
+    [[nodiscard]] float computeRotationRisk(ALCCandidate& candidate,
+                                            float lambda) const;
+
 private:
     Params params_;
 };

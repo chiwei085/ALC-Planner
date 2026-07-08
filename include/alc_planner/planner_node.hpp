@@ -1,5 +1,6 @@
 #pragma once
 
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <nav2_msgs/action/spin.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
@@ -33,6 +34,8 @@ private:
     void onMapData(const rtabmap_msgs::msg::MapData::SharedPtr msg);
     void onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg);
     void onMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+    void onLocalizationPose(
+        const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
     void onPlannerEvent(const std_msgs::msg::String::SharedPtr msg);
 
     void ingestNodes(const rtabmap_msgs::msg::MapData& msg);
@@ -68,6 +71,7 @@ private:
     SaliencyState saliency_state_;
     nav_msgs::msg::OccupancyGrid::SharedPtr occupancy_map_;
     float cached_coverage_ratio_ = 0.5f;
+    float current_pose_uncertainty_lambda_ = 0.0f;
     std::vector<ALCCandidate> candidates_;
     std::optional<ALCCandidate> best_candidate_;
     Pose6f last_lighthouse_pose_;
@@ -87,6 +91,8 @@ private:
     rclcpp::Subscription<rtabmap_msgs::msg::MapData>::SharedPtr sub_map_data_;
     rclcpp::Subscription<rtabmap_msgs::msg::Info>::SharedPtr sub_info_;
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr sub_map_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::
+        SharedPtr sub_localization_pose_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_planner_event_;
     std::vector<double> degraded_exploration_event_times_;
 };

@@ -43,6 +43,16 @@ float uncertaintyGainExact(const ALCCandidate& candidate,
     return candidate.graph_dist - candidate.map_dist;
 }
 
+float normalizedYawRisk(const ALCCandidate& candidate, const Params& params) {
+    if (!params.rotation_risk_enabled ||
+        params.rotation_risk_max_yaw_rad <= 0.0f) {
+        return 0.0f;
+    }
+    const float clamped_yaw = std::min(std::abs(candidate.approach_yaw_delta),
+                                       params.rotation_risk_max_yaw_rad);
+    return clamped_yaw / params.rotation_risk_max_yaw_rad;
+}
+
 }  // namespace
 
 RewardEvaluator::RewardEvaluator(Params params) : params_(params) {}
@@ -63,6 +73,9 @@ void RewardEvaluator::fillRewardUB(ALCCandidate& candidate,
     candidate.P_lc_ub = std::min(1.0f, plc_sum);
     candidate.reward_ub = -params_.ct * candidate.euclidean_dist +
                           candidate.P_lc_ub * candidate.delta_U_ub;
+    candidate.reward_before_rotation_risk = candidate.reward_ub;
+    candidate.reward_ub -=
+        computeRotationRisk(candidate, candidate.pose_uncertainty_lambda);
 }
 
 void RewardEvaluator::fillReward(ALCCandidate& candidate,
@@ -82,6 +95,26 @@ void RewardEvaluator::fillReward(ALCCandidate& candidate,
     candidate.P_lc = 1.0f - prob_all_fail;
     candidate.reward =
         -params_.ct * candidate.map_dist + candidate.P_lc * candidate.delta_U;
+    candidate.reward_before_rotation_risk = candidate.reward;
+    candidate.reward -=
+        computeRotationRisk(candidate, candidate.pose_uncertainty_lambda);
+}
+
+float RewardEvaluator::computeRotationRisk(ALCCandidate& candidate,
+                                           const float lambda) const {
+    if (!params_.rotation_risk_enabled || lambda <= 0.0f ||
+        params_.rotation_risk_max_lambda <= 0.0f || !std::isfinite(lambda)) {
+        candidate.pose_uncertainty_lambda = 0.0f;
+        candidate.rotation_risk = 0.0f;
+        return 0.0f;
+    }
+
+    const float effective_lambda =
+        std::min(lambda, params_.rotation_risk_max_lambda);
+    candidate.pose_uncertainty_lambda = effective_lambda;
+    candidate.rotation_risk =
+        effective_lambda * normalizedYawRisk(candidate, params_);
+    return candidate.rotation_risk;
 }
 
 }  // namespace alc_planner
