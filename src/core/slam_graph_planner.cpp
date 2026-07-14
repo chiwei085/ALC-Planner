@@ -1,5 +1,7 @@
 #include "alc_planner/slam_graph_planner.hpp"
 
+#include <algorithm>
+
 namespace alc_planner
 {
 
@@ -8,7 +10,7 @@ SLAMGraphPlanner::SLAMGraphPlanner(Params params)
 
 std::optional<ALCCandidate> SLAMGraphPlanner::onEvaluationComplete(
     const std::optional<ALCCandidate>& best, const double elapsed_seconds,
-    const float coverage_ratio, const int robot_ix) {
+    const float coverage_ratio, const int robot_ix, const float reward_bonus) {
     if (state_ != PlannerState::EVALUATING || !best.has_value()) {
         return std::nullopt;
     }
@@ -19,7 +21,8 @@ std::optional<ALCCandidate> SLAMGraphPlanner::onEvaluationComplete(
         return std::nullopt;
     }
 
-    if (!trigger_.shouldTriggerALC(best->reward, elapsed_seconds,
+    const float effective_reward = best->reward + std::max(0.0f, reward_bonus);
+    if (!trigger_.shouldTriggerALC(effective_reward, elapsed_seconds,
                                    coverage_ratio)) {
         return std::nullopt;
     }

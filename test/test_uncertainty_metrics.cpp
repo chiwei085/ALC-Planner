@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -29,6 +30,15 @@ void addDirectedEdge(GraphState& graph, const int from_node_id,
     const int to_ix = graph.node_to_ix.at(to_node_id);
     graph.adj[static_cast<std::size_t>(from_ix)].push_back(
         {to_ix, dist, variance >= 0.0f ? variance : dist});
+}
+
+std::array<double, 36> makeCovariance(const double x_var, const double y_var,
+                                      const double yaw_var) {
+    std::array<double, 36> covariance{};
+    covariance[0] = x_var;
+    covariance[7] = y_var;
+    covariance[35] = yaw_var;
+    return covariance;
 }
 
 }  // namespace
@@ -147,6 +157,65 @@ TEST(UncertaintyMetrics, ZeroVarianceLoopClosureCollapsesPathVariance) {
     EXPECT_FLOAT_EQ(UncertaintyMetrics::graphVarianceDist(
                         graph, graph.node_to_ix.at(0), graph.node_to_ix.at(3)),
                     0.0f);
+}
+
+TEST(UncertaintyMetrics, RotationRiskLambdaUsesPlanarLogDet) {
+    Params params;
+    params.rotation_risk_enabled = true;
+    params.rotation_risk_weight = 0.5f;
+    params.rotation_risk_reference_det = 1.0e-6f;
+    params.rotation_risk_max_lambda = 10.0f;
+
+    const auto covariance = makeCovariance(0.1, 0.2, 0.3);
+    const float lambda = UncertaintyMetrics::rotationRiskLambdaFromCovariance(
+        covariance, params);
+
+    const double expected = 0.5 * std::log((0.1 * 0.2 * 0.3) / 1.0e-6);
+    EXPECT_NEAR(lambda, expected, 1e-4f);
+}
+
+TEST(UncertaintyMetrics, RotationRiskLambdaHandlesSingularWithJitter) {
+    Params params;
+    params.rotation_risk_enabled = true;
+    params.rotation_risk_weight = 1.0f;
+    params.rotation_risk_reference_det = 1.0e-30f;
+    params.rotation_risk_max_lambda = 10.0f;
+
+    const auto covariance = makeCovariance(0.0, 0.0, 0.0);
+    const float lambda = UncertaintyMetrics::rotationRiskLambdaFromCovariance(
+        covariance, params);
+
+    EXPECT_TRUE(std::isfinite(lambda));
+    EXPECT_GT(lambda, 0.0f);
+}
+
+TEST(UncertaintyMetrics, RotationRiskLambdaInvalidCovarianceReturnsZero) {
+    Params params;
+    params.rotation_risk_enabled = true;
+
+    auto nan_covariance = makeCovariance(0.1, 0.1, 0.1);
+    nan_covariance[0] = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_FLOAT_EQ(UncertaintyMetrics::rotationRiskLambdaFromCovariance(
+                        nan_covariance, params),
+                    0.0f);
+
+    const auto negative_covariance = makeCovariance(0.1, -0.1, 0.1);
+    EXPECT_FLOAT_EQ(UncertaintyMetrics::rotationRiskLambdaFromCovariance(
+                        negative_covariance, params),
+                    0.0f);
+}
+
+TEST(UncertaintyMetrics, RotationRiskLambdaClampsAtMax) {
+    Params params;
+    params.rotation_risk_enabled = true;
+    params.rotation_risk_weight = 10.0f;
+    params.rotation_risk_reference_det = 1.0e-12f;
+    params.rotation_risk_max_lambda = 1.25f;
+
+    const auto covariance = makeCovariance(1.0, 1.0, 1.0);
+    EXPECT_NEAR(UncertaintyMetrics::rotationRiskLambdaFromCovariance(covariance,
+                                                                     params),
+                1.25f, 1e-6f);
 }
 
 }  // namespace alc_planner

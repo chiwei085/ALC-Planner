@@ -7,11 +7,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
+  add_compile_options(-Wall -Wextra -Wpedantic -pipe)
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX)
   add_compile_options(-Wno-psabi)
+endif()
+
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+  set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+  set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -43,6 +49,7 @@ add_library(alc_planner_core
   src/core/path_planner.cpp
   src/core/trigger_policy.cpp
 )
+set_target_properties(alc_planner_core PROPERTIES UNITY_BUILD ON)
 
 target_include_directories(alc_planner_core
   PUBLIC

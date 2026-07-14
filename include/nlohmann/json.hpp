@@ -66,6 +66,13 @@ public:
         return result;
     }
 
+    bool is_string() const {
+        return std::holds_alternative<std::string>(value_);
+    }
+
+    template <typename T>
+    T get() const;
+
     bool contains(const std::string& key) const {
         if (!std::holds_alternative<object_t>(value_)) {
             return false;
@@ -195,7 +202,9 @@ private:
             if (done()) {
                 throw parse_error("unexpected end of JSON");
             }
-            return text_[pos_++];
+            const char value = text_[pos_];
+            ++pos_;
+            return value;
         }
 
         bool match(const char* token) {
@@ -357,5 +366,13 @@ private:
 
     value_t value_;
 };
+
+template <>
+inline std::string json::get<std::string>() const {
+    if (!std::holds_alternative<std::string>(value_)) {
+        throw std::runtime_error("json: value is not a string");
+    }
+    return std::get<std::string>(value_);
+}
 
 }  // namespace nlohmann
