@@ -149,6 +149,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_planner_node_params alc_planner_node_lib)
   ament_target_dependencies(test_planner_node_params rclcpp)
 
+  # Isolated domain: the test serves its own fake /navigate_to_pose.
+  ament_add_gtest(test_planner_node_navigation
+    test/test_planner_node_navigation.cpp
+    ENV ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1)
+  target_link_libraries(test_planner_node_navigation alc_planner_node_lib)
+  ament_target_dependencies(test_planner_node_navigation rclcpp rclcpp_action)
+
   ament_add_gtest(test_coverage test/test_coverage.cpp)
   target_link_libraries(test_coverage alc_planner_core)
 endif()

@@ -505,13 +505,16 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
 
     const std::weak_ptr<ALCPlannerNode> weak_self =
         std::static_pointer_cast<ALCPlannerNode>(shared_from_this());
+    const std::uint64_t attempt = ++nav_attempt_;
+    nav_goal_handle_.reset();
     rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;
-    options.goal_response_callback = [weak_self](const auto& handle) {
+    options.goal_response_callback = [weak_self, attempt](const auto& handle) {
         const auto self = weak_self.lock();
-        if (!self) {
+        if (!self || self->nav_attempt_ != attempt) {
             return;
         }
         if (handle) {
+            self->nav_goal_handle_ = handle;
             self->startNavigationTimeout();
             return;
         }
@@ -523,11 +526,12 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
         RCLCPP_WARN(self->get_logger(),
                     "[ALCPlanner] navigation goal rejected");
     };
-    options.result_callback = [weak_self](const auto& result) {
+    options.result_callback = [weak_self, attempt](const auto& result) {
         const auto self = weak_self.lock();
-        if (!self) {
+        if (!self || self->nav_attempt_ != attempt) {
             return;
         }
+        self->nav_goal_handle_.reset();
         self->cancelNavigationTimeout();
         const bool success =
             result.code == rclcpp_action::ResultCode::SUCCEEDED;
@@ -569,6 +573,15 @@ void ALCPlannerNode::startNavigationTimeout() {
                 return;
             }
 
+            // Abandon the goal for real: cancel it in Nav2 and drop its
+            // callbacks, so the robot stops chasing it and its late result
+            // cannot touch a newer attempt.
+            if (self->nav_goal_handle_) {
+                (void)self->nav_client_->async_cancel_goal(
+                    self->nav_goal_handle_);
+                self->nav_goal_handle_.reset();
+            }
+            ++self->nav_attempt_;
             (void)self->slam_graph_planner_.onNavigationResult(false);
             self->best_candidate_.reset();
             self->publishAlcFinished("navigation", false, "navigation_timeout");

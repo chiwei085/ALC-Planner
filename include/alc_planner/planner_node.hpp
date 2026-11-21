@@ -10,6 +10,7 @@
 #include <rtabmap_msgs/msg/map_data.hpp>
 #include <std_msgs/msg/string.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -31,6 +32,7 @@ public:
         const rclcpp::NodeOptions& opts = rclcpp::NodeOptions{});
 
 private:
+    friend class ALCPlannerNodeNavigationTest;
     void onMapData(const rtabmap_msgs::msg::MapData::SharedPtr msg);
     void onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg);
     void onMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
@@ -86,6 +88,10 @@ private:
     rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
     rclcpp_action::Client<Spin>::SharedPtr spin_client_;
     rclcpp::TimerBase::SharedPtr nav_timeout_timer_;
+    // Each ALC navigation goal gets an id; callbacks from an older goal (one
+    // that timed out or was preempted) are ignored.
+    std::uint64_t nav_attempt_ = 0;
+    rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr nav_goal_handle_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr event_pub_;
 
     rclcpp::Subscription<rtabmap_msgs::msg::MapData>::SharedPtr sub_map_data_;
