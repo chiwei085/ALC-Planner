@@ -158,6 +158,11 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_coverage test/test_coverage.cpp)
   target_link_libraries(test_coverage alc_planner_core)
+
+  # Humble's GoogleTest relies on a transitive cstdint include absent in newer GCC.
+  if(TARGET gtest AND (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
+    target_compile_options(gtest PRIVATE -include cstdint)
+  endif()
 endif()
 
 ament_package()
