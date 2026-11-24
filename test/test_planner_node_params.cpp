@@ -18,33 +18,11 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
     rclcpp::NodeOptions options;
     options.parameter_overrides(
         {rclcpp::Parameter("cv_L", 1.1),
-         rclcpp::Parameter("cv_G", 1.2),
-         rclcpp::Parameter("cs_lighthouse", 0.2),
-         rclcpp::Parameter("d_min_lighthouse", 2.0),
-         rclcpp::Parameter("cl", 6.0),
-         rclcpp::Parameter("ct", 0.2),
-         rclcpp::Parameter("cE", 8.0),
-         rclcpp::Parameter("cG", 2.0),
-         rclcpp::Parameter("cs", 0.15),
-         rclcpp::Parameter("eps_dbscan", 1.0),
-         rclcpp::Parameter("min_pts", 3),
-         rclcpp::Parameter("theta_max", 0.25),
-         rclcpp::Parameter("lambda_decay", 0.03),
-         rclcpp::Parameter("alpha_cov", 0.4),
-         rclcpp::Parameter("tau_min_revisit", 4),
-         rclcpp::Parameter("plc_min_revisit", 0.02),
-         rclcpp::Parameter("map_dist_min_revisit", 0.75),
-         rclcpp::Parameter("use_variance_uncertainty", true),
-         rclcpp::Parameter("rotation_risk_enabled", true),
-         rclcpp::Parameter("rotation_risk_weight", 0.2),
-         rclcpp::Parameter("rotation_risk_reference_det", 1.0e-5),
-         rclcpp::Parameter("rotation_risk_max_lambda", 1.5),
-         rclcpp::Parameter("rotation_risk_max_yaw_rad", 1.57),
+         rclcpp::Parameter("drift_yaw_var_per_rad", 0.02),
+         rclcpp::Parameter("max_position_std_m", 0.2),
+         rclcpp::Parameter("turning_radius_m", 0.7),
          rclcpp::Parameter("navigation_timeout_sec", 37.0),
-         rclcpp::Parameter("degraded_exploration_alc_bonus", 0.35),
-         rclcpp::Parameter("degraded_exploration_window_sec", 42.0),
-         rclcpp::Parameter("degraded_exploration_min_events", 5),
-         rclcpp::Parameter("use_approach_heading", false),
+         rclcpp::Parameter("nav_behavior_tree", "/tmp/tree.xml"),
          rclcpp::Parameter("map_data_topic", "/test/mapData"),
          rclcpp::Parameter("info_topic", "/test/info"),
          rclcpp::Parameter("map_topic", "/test/map"),
@@ -53,44 +31,15 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
     const auto node = std::make_shared<ALCPlannerNode>(options);
 
     EXPECT_NEAR(node->get_parameter("cv_L").as_double(), 1.1, 1e-6);
-    EXPECT_NEAR(node->get_parameter("cv_G").as_double(), 1.2, 1e-6);
-    EXPECT_NEAR(node->get_parameter("cs_lighthouse").as_double(), 0.2, 1e-6);
-    EXPECT_NEAR(node->get_parameter("d_min_lighthouse").as_double(), 2.0, 1e-6);
-    EXPECT_NEAR(node->get_parameter("cl").as_double(), 6.0, 1e-6);
-    EXPECT_NEAR(node->get_parameter("ct").as_double(), 0.2, 1e-6);
-    EXPECT_NEAR(node->get_parameter("cE").as_double(), 8.0, 1e-6);
-    EXPECT_NEAR(node->get_parameter("cG").as_double(), 2.0, 1e-6);
-    EXPECT_NEAR(node->get_parameter("cs").as_double(), 0.15, 1e-6);
-    EXPECT_NEAR(node->get_parameter("eps_dbscan").as_double(), 1.0, 1e-6);
-    EXPECT_EQ(node->get_parameter("min_pts").as_int(), 3);
-    EXPECT_NEAR(node->get_parameter("theta_max").as_double(), 0.25, 1e-6);
-    EXPECT_NEAR(node->get_parameter("lambda_decay").as_double(), 0.03, 1e-6);
-    EXPECT_NEAR(node->get_parameter("alpha_cov").as_double(), 0.4, 1e-6);
-    EXPECT_EQ(node->get_parameter("tau_min_revisit").as_int(), 4);
-    EXPECT_NEAR(node->get_parameter("plc_min_revisit").as_double(), 0.02, 1e-6);
-    EXPECT_NEAR(node->get_parameter("map_dist_min_revisit").as_double(), 0.75,
+    EXPECT_NEAR(node->get_parameter("drift_yaw_var_per_rad").as_double(), 0.02,
                 1e-6);
-    EXPECT_TRUE(node->get_parameter("use_variance_uncertainty").as_bool());
-    EXPECT_TRUE(node->get_parameter("rotation_risk_enabled").as_bool());
-    EXPECT_NEAR(node->get_parameter("rotation_risk_weight").as_double(), 0.2,
+    EXPECT_NEAR(node->get_parameter("max_position_std_m").as_double(), 0.2,
                 1e-6);
-    EXPECT_NEAR(node->get_parameter("rotation_risk_reference_det").as_double(),
-                1.0e-5, 1e-9);
-    EXPECT_NEAR(node->get_parameter("rotation_risk_max_lambda").as_double(),
-                1.5, 1e-6);
-    EXPECT_NEAR(node->get_parameter("rotation_risk_max_yaw_rad").as_double(),
-                1.57, 1e-6);
+    EXPECT_NEAR(node->get_parameter("turning_radius_m").as_double(), 0.7, 1e-6);
     EXPECT_NEAR(node->get_parameter("navigation_timeout_sec").as_double(), 37.0,
                 1e-6);
-    EXPECT_NEAR(
-        node->get_parameter("degraded_exploration_alc_bonus").as_double(), 0.35,
-        1e-6);
-    EXPECT_NEAR(
-        node->get_parameter("degraded_exploration_window_sec").as_double(),
-        42.0, 1e-6);
-    EXPECT_EQ(node->get_parameter("degraded_exploration_min_events").as_int(),
-              5);
-    EXPECT_FALSE(node->get_parameter("use_approach_heading").as_bool());
+    EXPECT_EQ(node->get_parameter("nav_behavior_tree").as_string(),
+              "/tmp/tree.xml");
     EXPECT_EQ(node->get_parameter("planner_event_topic").as_string(),
               "/test/planner_events");
     EXPECT_EQ(node->count_subscribers("/test/mapData"), 1u);

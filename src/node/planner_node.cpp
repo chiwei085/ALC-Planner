@@ -10,15 +10,13 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "alc_planner/map_utils.hpp"
-#include "alc_planner/uncertainty_metrics.hpp"
 
 namespace alc_planner
 {
@@ -40,10 +38,7 @@ Pose6f toPose6f(const geometry_msgs::msg::Pose& pose_msg) {
     return pose;
 }
 
-constexpr float kDefaultVariance = 1.0f;
-constexpr float kMinApproachHeadingDistance = 1.0e-3f;
 constexpr double kDefaultNavigationTimeoutSec = 120.0;
-constexpr bool kDefaultUseApproachHeading = true;
 constexpr const char* kDefaultPlannerEventTopic = "/planner/events";
 
 std::optional<std::string> jsonStringField(const nlohmann::json& payload,
@@ -54,62 +49,13 @@ std::optional<std::string> jsonStringField(const nlohmann::json& payload,
     return payload[key].get<std::string>();
 }
 
-float scalarVarianceFromInformation(const std::array<double, 36>& information) {
-    constexpr int kDiagonalIndices[6] = {0, 7, 14, 21, 28, 35};
-
-    double reciprocal_sum = 0.0;
-    int count = 0;
-    for (const int index : kDiagonalIndices) {
-        const double value = information[static_cast<std::size_t>(index)];
-        if (!std::isfinite(value) || value <= 0.0) {
-            continue;
-        }
-
-        reciprocal_sum += 1.0 / value;
-        ++count;
-    }
-
-    if (count <= 0) {
-        return kDefaultVariance;
-    }
-    return static_cast<float>(reciprocal_sum / static_cast<double>(count));
-}
-
-float yawFromPose(const Pose6f& pose) {
-    const Eigen::Quaternionf q = pose.orientation.normalized();
-    return std::atan2(2.0f * (q.w() * q.z() + q.x() * q.y()),
-                      1.0f - 2.0f * (q.y() * q.y() + q.z() * q.z()));
-}
-
-float normalizeYawDelta(float delta) {
-    while (delta > static_cast<float>(M_PI)) {
-        delta -= static_cast<float>(2.0 * M_PI);
-    }
-    while (delta < static_cast<float>(-M_PI)) {
-        delta += static_cast<float>(2.0 * M_PI);
-    }
-    return delta;
-}
-
-float approachYawDelta(const Pose6f& robot_pose, const Pose6f& target_pose) {
-    const Eigen::Vector3f delta = target_pose.position - robot_pose.position;
-    float approach_yaw = yawFromPose(target_pose);
-    if (delta.head<2>().norm() > kMinApproachHeadingDistance) {
-        approach_yaw = std::atan2(delta.y(), delta.x());
-    }
-    return normalizeYawDelta(approach_yaw - yawFromPose(robot_pose));
-}
-
 }  // namespace
 
 ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
     : rclcpp::Node("alc_planner", opts),
       params_(declarePlannerParams()),
       saliency_eval_(params_),
-      candidate_builder_(params_),
-      reward_evaluator_(params_),
-      bnb_selector_(params_),
-      slam_graph_planner_(params_) {
+      revisit_selector_(params_) {
     nav_client_ =
         rclcpp_action::create_client<NavigateToPose>(this, "/navigate_to_pose");
     spin_client_ = rclcpp_action::create_client<Spin>(this, "/spin");
@@ -128,11 +74,6 @@ ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
         declare_parameter<std::string>("map_topic", "/map"),
         rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMap, this, std::placeholders::_1));
-    sub_localization_pose_ =
-        create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-            "localization_pose", rclcpp::SensorDataQoS(),
-            std::bind(&ALCPlannerNode::onLocalizationPose, this,
-                      std::placeholders::_1));
     sub_planner_event_ = create_subscription<std_msgs::msg::String>(
         planner_event_topic_, 10,
         std::bind(&ALCPlannerNode::onPlannerEvent, this,
@@ -147,58 +88,31 @@ Params ALCPlannerNode::declarePlannerParams() {
         return static_cast<float>(declare_parameter<double>(
             name, static_cast<double>(default_value)));
     };
-    const auto declare_int = [this](const std::string& name,
-                                    const int default_value) {
-        return declare_parameter<int>(name, default_value);
-    };
-
-    params.camera_hfov_rad =
-        declare_float("camera_hfov_rad", params.camera_hfov_rad);
-    params.cv_L = declare_float("cv_L", params.cv_L);
-    params.cv_G = declare_float("cv_G", params.cv_G);
-    params.cs_lighthouse = declare_float("cs_lighthouse", params.cs_lighthouse);
-    params.d_min_lighthouse =
-        declare_float("d_min_lighthouse", params.d_min_lighthouse);
-    params.cl = declare_float("cl", params.cl);
-    params.ct = declare_float("ct", params.ct);
-    params.cE = declare_float("cE", params.cE);
-    params.cG = declare_float("cG", params.cG);
-    params.cs = declare_float("cs", params.cs);
-    params.eps_dbscan = declare_float("eps_dbscan", params.eps_dbscan);
-    params.min_pts = declare_int("min_pts", params.min_pts);
-    params.theta_max = declare_float("theta_max", params.theta_max);
-    params.lambda_decay = declare_float("lambda_decay", params.lambda_decay);
-    params.alpha_cov = declare_float("alpha_cov", params.alpha_cov);
-    params.tau_min_revisit =
-        declare_int("tau_min_revisit", params.tau_min_revisit);
-    params.plc_min_revisit =
-        declare_float("plc_min_revisit", params.plc_min_revisit);
-    params.map_dist_min_revisit =
-        declare_float("map_dist_min_revisit", params.map_dist_min_revisit);
-    params.use_variance_uncertainty = declare_parameter<bool>(
-        "use_variance_uncertainty", params.use_variance_uncertainty);
-    params.rotation_risk_enabled = declare_parameter<bool>(
-        "rotation_risk_enabled", params.rotation_risk_enabled);
-    params.rotation_risk_weight =
-        declare_float("rotation_risk_weight", params.rotation_risk_weight);
-    params.rotation_risk_reference_det = declare_float(
-        "rotation_risk_reference_det", params.rotation_risk_reference_det);
-    params.rotation_risk_max_lambda = declare_float(
-        "rotation_risk_max_lambda", params.rotation_risk_max_lambda);
-    params.rotation_risk_max_yaw_rad = declare_float(
-        "rotation_risk_max_yaw_rad", params.rotation_risk_max_yaw_rad);
+    for (const auto& [name, value] :
+         std::initializer_list<std::pair<const char*, float*>>{
+             {"cv_L", &params.cv_L},
+             {"cv_G", &params.cv_G},
+             {"cs", &params.cs},
+             {"cs_lighthouse", &params.cs_lighthouse},
+             {"d_min_lighthouse", &params.d_min_lighthouse},
+             {"drift_trans_var_per_m", &params.drift_trans_var_per_m},
+             {"drift_yaw_var_per_rad", &params.drift_yaw_var_per_rad},
+             {"closure_trans_var", &params.closure_trans_var},
+             {"closure_yaw_var", &params.closure_yaw_var},
+             {"max_position_std_m", &params.max_position_std_m},
+             {"turning_radius_m", &params.turning_radius_m},
+             {"arrival_xy_m", &params.arrival_xy_m},
+             {"arrival_yaw_rad", &params.arrival_yaw_rad}}) {
+        *value = declare_float(name, *value);
+    }
 
     navigation_timeout_sec_ = declare_parameter<double>(
         "navigation_timeout_sec", kDefaultNavigationTimeoutSec);
-    degraded_exploration_alc_bonus_ =
-        declare_parameter<double>("degraded_exploration_alc_bonus", 0.0);
-    degraded_exploration_window_sec_ =
-        declare_parameter<double>("degraded_exploration_window_sec", 60.0);
-    degraded_exploration_min_events_ =
-        declare_parameter<int>("degraded_exploration_min_events", 3);
     spin_at_target_ = declare_parameter<bool>("spin_at_target", true);
-    use_approach_heading_ = declare_parameter<bool>("use_approach_heading",
-                                                    kDefaultUseApproachHeading);
+    // Empty uses the default tree. The R2 passes the straight-tail one so the
+    // car arrives facing the keyframe's view.
+    nav_behavior_tree_ =
+        declare_parameter<std::string>("nav_behavior_tree", "");
     planner_event_topic_ = declare_parameter<std::string>(
         "planner_event_topic", kDefaultPlannerEventTopic);
 
@@ -217,84 +131,37 @@ void ALCPlannerNode::onMapData(
     ingestLinks(*msg);
     saliency_eval_.update(graph_, saliency_state_);
     checkLighthouse();
-    candidates_ = candidate_builder_.build(graph_, saliency_state_);
-    if (graph_.robot_ix >= 0 &&
-        graph_.robot_ix < static_cast<int>(graph_.keyframes.size())) {
-        const Pose6f& robot_pose =
-            graph_.keyframes[static_cast<std::size_t>(graph_.robot_ix)].pose;
-        for (auto& candidate : candidates_) {
-            candidate.approach_yaw_delta =
-                approachYawDelta(robot_pose, candidate.rep_pose);
-            candidate.pose_uncertainty_lambda =
-                current_pose_uncertainty_lambda_;
-            setViewOverlap(candidate, robot_pose);
-        }
-    }
-    for (auto& candidate : candidates_) {
-        reward_evaluator_.fillRewardUB(candidate, saliency_state_);
-    }
-    best_candidate_.reset();
-    if (occupancy_map_ && graph_.robot_ix >= 0) {
-        best_candidate_ = bnb_selector_.select(
-            candidates_, graph_, saliency_state_, *occupancy_map_);
-        if (best_candidate_.has_value()) {
-            const int tau_node_id = nodeIdFromIx(best_candidate_->tau_ix);
-            RCLCPP_INFO(
-                get_logger(),
-                "[ALCPlanner] BNB best: tau_id=%d reward=%.4f map_dist=%.2f",
-                tau_node_id, best_candidate_->reward,
-                best_candidate_->map_dist);
-        }
-    }
-
     maybeTrigger();
 
     last_map_data_stamp_ = msg->header.stamp;
     logGraphState();
 }
 
-void ALCPlannerNode::setViewOverlap(ALCCandidate& candidate,
-                                    const Pose6f& robot_pose) const {
-    const Eigen::Vector3f delta =
-        candidate.rep_pose.position - robot_pose.position;
-    const bool approach = use_approach_heading_ &&
-                          delta.head<2>().norm() > kMinApproachHeadingDistance;
-    const float arrival_yaw = approach ? std::atan2(delta.y(), delta.x())
-                                       : yawFromPose(candidate.rep_pose);
-    candidate.view_overlap.clear();
-    for (const int ix : candidate.keyframe_ixs) {
-        const float yaw =
-            yawFromPose(graph_.keyframes[static_cast<std::size_t>(ix)].pose);
-        candidate.view_overlap.push_back(std::max(
-            0.0f, 1.0f - std::abs(normalizeYawDelta(arrival_yaw - yaw)) /
-                             params_.camera_hfov_rad));
+void ALCPlannerNode::resolveAttempt() {
+    if (!attempt_) {
+        return;
     }
+    if (attempt_->reached) {
+        saliency_eval_.observeLoopClosureAttempt(attempt_->closure);
+    }
+    if (!attempt_->closure) {
+        failed_targets_.push_back(attempt_->target);
+    }
+    attempt_.reset();
 }
 
 void ALCPlannerNode::maybeTrigger() {
     // A moving robot keeps its goal: cancelling it costs more than waiting.
-    if (exploration_moving_) {
+    if (exploration_moving_ || !occupancy_map_ ||
+        slam_graph_planner_.state() != PlannerState::EVALUATING) {
         return;
     }
-    // The trigger threshold decays from the first map, not from infinity.
-    if (last_alc_time_.nanoseconds() == 0) {
-        last_alc_time_ = now();
-    }
-    const double elapsed = (now() - last_alc_time_).seconds();
-    const float coverage_ratio = computeCoverageRatio();
-    const double now_sec = now().seconds();
-    const float reward_bonus =
-        degradedExplorationActive(now_sec)
-            ? static_cast<float>(degraded_exploration_alc_bonus_)
-            : 0.0f;
-    last_trigger_inputs_ = {
-        elapsed, coverage_ratio, reward_bonus,
-        TriggerPolicy(params_).threshold(elapsed, coverage_ratio)};
-    const auto to_navigate = slam_graph_planner_.onEvaluationComplete(
-        best_candidate_, elapsed, coverage_ratio, graph_.robot_ix,
-        reward_bonus);
-    if (to_navigate.has_value()) {
-        sendNavGoal(*to_navigate);
+    resolveAttempt();
+    const auto decision = revisit_selector_.select(
+        graph_, saliency_state_, *occupancy_map_, failed_targets_);
+    publishEvaluation(decision);
+    if (decision.best && slam_graph_planner_.startNavigation()) {
+        sendNavGoal(*decision.best);
     }
 }
 
@@ -311,9 +178,8 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
                     msg->loop_closure_id);
     }
 
-    if (alc_rotation_attempt_active_ && msg->loop_closure_id > 0 &&
-        slam_graph_planner_.state() == PlannerState::ROTATING) {
-        alc_rotation_observed_loop_closure_ = true;
+    if (attempt_ && msg->loop_closure_id > 0) {
+        attempt_->closure = true;
     }
 }
 
@@ -324,18 +190,6 @@ void ALCPlannerNode::updateRobotIx() {
 
 void ALCPlannerNode::onMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
     occupancy_map_ = msg;
-    cached_coverage_ratio_ = estimateCoverageRatio(occupancy_map_.get());
-}
-
-void ALCPlannerNode::onLocalizationPose(
-    const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
-    if (!msg) {
-        return;
-    }
-
-    current_pose_uncertainty_lambda_ =
-        UncertaintyMetrics::rotationRiskLambdaFromCovariance(
-            msg->pose.covariance, params_);
 }
 
 void ALCPlannerNode::onPlannerEvent(
@@ -350,32 +204,24 @@ void ALCPlannerNode::onPlannerEvent(
         if (event.rfind("alc_", 0) == 0) {
             return;
         }
-        if (event == "goal_sent" || event == "subgoal_sent" ||
-            event == "recovery_tree_started" ||
-            event == "observation_turn_started") {
+        if (event == "goal_sent" || event == "subgoal_sent") {
+            // A route's first goal finds the robot at rest, so a revisit can
+            // take its place without stopping anything.
+            if (payload.contains("index") &&
+                static_cast<int>(payload[std::string("index")]) == 0) {
+                exploration_moving_ = false;
+                maybeTrigger();
+            }
+            exploration_moving_ = true;
+        }
+        else if (event == "recovery_tree_started" ||
+                 event == "observation_turn_started") {
             exploration_moving_ = true;
         }
         else if (event == "route_completed") {
             exploration_moving_ = false;
             maybeTrigger();
         }
-        const std::string failure_class =
-            jsonStringField(payload, "failure_class").value_or(std::string{});
-        const bool degraded = event == "no_frontier_candidate" ||
-                              failure_class == "global_path_blocked" ||
-                              failure_class == "local_hazard" ||
-                              failure_class == "reverse_unsafe" ||
-                              failure_class == "stall_or_slip" ||
-                              failure_class == "recovery_failed";
-        if (!degraded) {
-            return;
-        }
-        double event_time = now().seconds();
-        if (payload.contains("time_sec")) {
-            event_time = static_cast<double>(payload[std::string("time_sec")]);
-        }
-        degraded_exploration_event_times_.push_back(event_time);
-        pruneDegradationEvents(now().seconds());
     }
     catch (const nlohmann::json::parse_error&) {
     }
@@ -437,20 +283,13 @@ void ALCPlannerNode::ingestLinks(const rtabmap_msgs::msg::MapData& msg) {
 
         const int from_ix = from_it->second;
         const int to_ix = to_it->second;
-        const float dist =
-            (graph_.keyframes[static_cast<std::size_t>(from_ix)].pose.position -
-             graph_.keyframes[static_cast<std::size_t>(to_ix)].pose.position)
-                .norm();
-        const float variance = scalarVarianceFromInformation(link.information);
+        // RTAB-Map: 0 neighbor and 6 merged neighbor are odometry.
+        const bool closure = link.type != 0 && link.type != 6;
         graph_.adj[static_cast<std::size_t>(from_ix)].push_back(
-            {to_ix, dist, variance});
+            {to_ix, closure});
         graph_.adj[static_cast<std::size_t>(to_ix)].push_back(
-            {from_ix, dist, variance});
-        RCLCPP_DEBUG(get_logger(),
-                     "[ALCPlanner] link %d->%d: dist=%.3f variance=%.6f",
-                     link.from_id, link.to_id, dist, variance);
+            {from_ix, closure});
     }
-    ++graph_.version;
 
     RCLCPP_DEBUG(get_logger(),
                  "[ALCPlanner] ingestLinks: rebuilt %zu directed edges",
@@ -490,9 +329,9 @@ void ALCPlannerNode::checkLighthouse() {
 }
 
 void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
+    attempt_ = Attempt{target.rep_pose};
     if (!nav_client_) {
         (void)slam_graph_planner_.onNavigationResult(false);
-        best_candidate_.reset();
         publishAlcFinished("navigation", false, "nav_client_unavailable");
         RCLCPP_WARN(get_logger(),
                     "[ALCPlanner] navigate_to_pose action client unavailable");
@@ -500,7 +339,6 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
     }
     if (!nav_client_->wait_for_action_server(std::chrono::seconds(0))) {
         (void)slam_graph_planner_.onNavigationResult(false);
-        best_candidate_.reset();
         publishAlcFinished("navigation", false, "nav_server_unavailable");
         RCLCPP_WARN(get_logger(),
                     "[ALCPlanner] navigate_to_pose action server unavailable");
@@ -514,23 +352,12 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
     goal.pose.pose.position.y = target.rep_pose.position.y();
     goal.pose.pose.position.z = target.rep_pose.position.z();
     Eigen::Quaternionf goal_orientation = target.rep_pose.orientation;
-    if (use_approach_heading_ && graph_.robot_ix >= 0 &&
-        graph_.robot_ix < static_cast<int>(graph_.keyframes.size())) {
-        const Pose6f& robot_pose =
-            graph_.keyframes[static_cast<std::size_t>(graph_.robot_ix)].pose;
-        const Eigen::Vector3f delta =
-            target.rep_pose.position - robot_pose.position;
-        if (delta.head<2>().norm() > kMinApproachHeadingDistance) {
-            const float yaw = std::atan2(delta.y(), delta.x());
-            goal_orientation = Eigen::Quaternionf(
-                Eigen::AngleAxisf(yaw, Eigen::Vector3f::UnitZ()));
-        }
-    }
     goal_orientation.normalize();
     goal.pose.pose.orientation.x = goal_orientation.x();
     goal.pose.pose.orientation.y = goal_orientation.y();
     goal.pose.pose.orientation.z = goal_orientation.z();
     goal.pose.pose.orientation.w = goal_orientation.w();
+    goal.behavior_tree = nav_behavior_tree_;
 
     RCLCPP_INFO(get_logger(),
                 "[ALCPlanner] sending nav goal: tau_id=%d x=%.2f y=%.2f",
@@ -556,7 +383,6 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
 
         self->cancelNavigationTimeout();
         (void)self->slam_graph_planner_.onNavigationResult(false);
-        self->best_candidate_.reset();
         self->publishAlcFinished("navigation", false, "goal_rejected");
         RCLCPP_WARN(self->get_logger(),
                     "[ALCPlanner] navigation goal rejected");
@@ -573,6 +399,9 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
         const bool should_spin =
             self->slam_graph_planner_.onNavigationResult(success);
         if (should_spin) {
+            if (self->attempt_) {
+                self->attempt_->reached = true;
+            }
             if (self->spin_at_target_) {
                 self->sendSpinGoal();
                 return;
@@ -583,7 +412,6 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
         }
 
         if (!success) {
-            self->best_candidate_.reset();
             self->publishAlcFinished("navigation", false, "navigation_failed");
             RCLCPP_WARN(self->get_logger(),
                         "[ALCPlanner] navigation to ALC target failed");
@@ -623,7 +451,6 @@ void ALCPlannerNode::startNavigationTimeout() {
             }
             ++self->nav_attempt_;
             (void)self->slam_graph_planner_.onNavigationResult(false);
-            self->best_candidate_.reset();
             self->publishAlcFinished("navigation", false, "navigation_timeout");
             RCLCPP_WARN(self->get_logger(),
                         "[ALCPlanner] navigation to ALC target timed out "
@@ -662,8 +489,6 @@ void ALCPlannerNode::sendSpinGoal() {
         rclcpp::Duration::from_seconds(std::max(0.0, navigation_timeout_sec_));
 
     RCLCPP_INFO(get_logger(), "[ALCPlanner] sending spin goal: yaw=2pi");
-    alc_rotation_observed_loop_closure_ = false;
-    alc_rotation_attempt_active_ = false;
 
     const std::weak_ptr<ALCPlannerNode> weak_self =
         std::static_pointer_cast<ALCPlannerNode>(shared_from_this());
@@ -678,7 +503,6 @@ void ALCPlannerNode::sendSpinGoal() {
         }
 
         self->slam_graph_planner_.onRotationComplete();
-        self->alc_rotation_attempt_active_ = false;
         self->publishAlcFinished("rotation", false, "spin_rejected");
         RCLCPP_WARN(self->get_logger(), "[ALCPlanner] spin goal rejected");
     };
@@ -688,12 +512,6 @@ void ALCPlannerNode::sendSpinGoal() {
             return;
         }
         (void)result;
-        if (self->alc_rotation_attempt_active_) {
-            self->saliency_eval_.observeLoopClosureAttempt(
-                self->alc_rotation_observed_loop_closure_);
-        }
-        self->alc_rotation_attempt_active_ = false;
-        self->alc_rotation_observed_loop_closure_ = false;
         self->slam_graph_planner_.onRotationComplete();
         const bool success =
             result.code == rclcpp_action::ResultCode::SUCCEEDED;
@@ -703,7 +521,6 @@ void ALCPlannerNode::sendSpinGoal() {
     };
 
     (void)spin_client_->async_send_goal(goal, options);
-    alc_rotation_attempt_active_ = true;
 }
 
 void ALCPlannerNode::publishAlcStarted(const ALCCandidate& target) {
@@ -717,20 +534,35 @@ void ALCPlannerNode::publishAlcStarted(const ALCCandidate& target) {
         {"tau_id", nodeIdFromIx(target.tau_ix)},
         {"goal_xy", nlohmann::json::array({target.rep_pose.position.x(),
                                            target.rep_pose.position.y()})},
-        {"approach_yaw_delta", target.approach_yaw_delta},
-        {"pose_uncertainty_lambda", target.pose_uncertainty_lambda},
-        {"rotation_risk", target.rotation_risk},
-        {"reward", target.reward},
-        {"reward_bonus", last_trigger_inputs_.reward_bonus},
-        {"threshold", last_trigger_inputs_.threshold},
-        {"elapsed_sec", last_trigger_inputs_.elapsed_sec},
-        {"coverage_ratio", last_trigger_inputs_.coverage_ratio},
         {"P_lc", target.P_lc},
-        {"delta_U", target.delta_U},
+        {"gain_nats", target.gain},
+        {"position_std_m", target.position_std},
+        {"max_position_std_m", params_.max_position_std_m},
         {"map_dist", target.map_dist},
-        {"graph_dist", target.graph_dist},
-        {"euclidean_dist", target.euclidean_dist},
+        {"cost_m", target.cost},
+        {"score", target.score},
     };
+    std_msgs::msg::String msg;
+    msg.data = payload.dump();
+    event_pub_->publish(msg);
+}
+
+// Every evaluation is logged, so a silent ALC shows how far it was from acting.
+void ALCPlannerNode::publishEvaluation(const RevisitDecision& decision) {
+    nlohmann::json payload = {
+        {"event", "alc_evaluated"},
+        {"time_sec", now().seconds()},
+        {"largest_position_std_m", decision.max_position_std},
+        {"max_position_std_m", params_.max_position_std_m},
+        {"tau_id", nullptr},
+    };
+    if (decision.best) {
+        payload[std::string("tau_id")] = nodeIdFromIx(decision.best->tau_ix);
+        payload[std::string("P_lc")] = decision.best->P_lc;
+        payload[std::string("gain_nats")] = decision.best->gain;
+        payload[std::string("cost_m")] = decision.best->cost;
+        payload[std::string("score")] = decision.best->score;
+    }
     std_msgs::msg::String msg;
     msg.data = payload.dump();
     event_pub_->publish(msg);
@@ -773,7 +605,6 @@ void ALCPlannerNode::publishLoopClosure(const rtabmap_msgs::msg::Info& info) {
 void ALCPlannerNode::publishAlcFinished(const std::string& phase,
                                         const bool success,
                                         const std::string& reason) {
-    last_alc_time_ = now();
     if (!event_pub_) {
         return;
     }
@@ -785,33 +616,6 @@ void ALCPlannerNode::publishAlcFinished(const std::string& phase,
     std_msgs::msg::String msg;
     msg.data = payload.dump();
     event_pub_->publish(msg);
-}
-
-void ALCPlannerNode::pruneDegradationEvents(const double now_sec) {
-    if (degraded_exploration_window_sec_ <= 0.0) {
-        degraded_exploration_event_times_.clear();
-        return;
-    }
-    degraded_exploration_event_times_.erase(
-        std::remove_if(degraded_exploration_event_times_.begin(),
-                       degraded_exploration_event_times_.end(),
-                       [this, now_sec](const double event_sec) {
-                           return now_sec - event_sec >
-                                  degraded_exploration_window_sec_;
-                       }),
-        degraded_exploration_event_times_.end());
-}
-
-bool ALCPlannerNode::degradedExplorationActive(const double now_sec) {
-    pruneDegradationEvents(now_sec);
-    return degraded_exploration_alc_bonus_ > 0.0 &&
-           degraded_exploration_min_events_ > 0 &&
-           degraded_exploration_event_times_.size() >=
-               static_cast<std::size_t>(degraded_exploration_min_events_);
-}
-
-float ALCPlannerNode::computeCoverageRatio() const {
-    return cached_coverage_ratio_;
 }
 
 void ALCPlannerNode::logGraphState() const {
@@ -855,23 +659,6 @@ void ALCPlannerNode::logGraphState() const {
                      saliency ? saliency->saliency_global : 0.0f,
                      saliency ? saliency->plc_intrinsic : 0.0f,
                      keyframe.word_ids.size());
-    }
-
-    RCLCPP_DEBUG(get_logger(), "[ALCPlanner] candidates: %zu",
-                 candidates_.size());
-    for (const auto& candidate : candidates_) {
-        const int tau_node_id = nodeIdFromIx(candidate.tau_ix);
-        RCLCPP_DEBUG(
-            get_logger(),
-            "[ALCPlanner] cand tau_id=%d euclid=%.2f graph_dist=%.2f "
-            "graph_var=%.4f reward_ub=%.4f lighthouse=%d "
-            "cluster_size=%zu yaw_delta=%.3f lambda=%.3f "
-            "rotation_risk=%.3f",
-            tau_node_id, candidate.euclidean_dist, candidate.graph_dist,
-            candidate.graph_dist_var, candidate.reward_ub,
-            static_cast<int>(candidate.is_lighthouse),
-            candidate.keyframe_ixs.size(), candidate.approach_yaw_delta,
-            candidate.pose_uncertainty_lambda, candidate.rotation_risk);
     }
 
     if (graph_.robot_ix < 0) {

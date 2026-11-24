@@ -28,7 +28,7 @@ protected:
         rclcpp::NodeOptions options;
         options.parameter_overrides(
             {rclcpp::Parameter("navigation_timeout_sec", 1.0),
-             rclcpp::Parameter("use_approach_heading", false),
+             rclcpp::Parameter("nav_behavior_tree", "view.xml"),
              rclcpp::Parameter("spin_at_target", false),
              rclcpp::Parameter("planner_event_topic", "/test_alc_nav/events")});
         node_ = std::make_shared<ALCPlannerNode>(options);
@@ -70,15 +70,8 @@ protected:
     void startAttempt() {
         ALCCandidate target;
         target.tau_ix = 0;
-        target.P_lc = 1.0f;
-        target.map_dist = 10.0f;
-        target.reward = 10.0f;
         target.rep_pose.orientation = Eigen::Quaternionf::Identity();
-        ASSERT_TRUE(node_->slam_graph_planner_
-                        .onEvaluationComplete(
-                            target, std::numeric_limits<double>::infinity(),
-                            0.0f, 100, 0.0f)
-                        .has_value());
+        ASSERT_TRUE(node_->slam_graph_planner_.startNavigation());
         node_->sendNavGoal(target);
     }
 
@@ -91,36 +84,46 @@ protected:
     std::size_t wordCount() const {
         return node_->graph_.keyframes.at(0).word_ids.size();
     }
+    // A robot that drove a long winding way from node 1, with a free map.
     void planCandidate() {
-        ALCCandidate c;
-        c.tau_ix = 0;
-        c.P_lc = 1.0f;
-        c.map_dist = 10.0f;
-        c.reward = 10.0f;
-        c.rep_pose.orientation = Eigen::Quaternionf::Identity();
-        node_->best_candidate_ = c;
-        node_->graph_.robot_ix = 100;
+        for (int id = 1; id <= 41; ++id) {
+            Keyframe keyframe;
+            keyframe.node_id = id;
+            keyframe.word_ids = {1, 2, 3};
+            keyframe.pose.position.x() = static_cast<float>(id - 1);
+            keyframe.pose.orientation = Eigen::AngleAxisf(
+                id % 2 ? 0.4f : -0.4f, Eigen::Vector3f::UnitZ());
+            node_->graph_.node_to_ix[id] = id - 1;
+            node_->graph_.ix_to_node.push_back(id);
+            node_->graph_.keyframes.push_back(keyframe);
+            node_->graph_.adj.push_back({});
+            KeyframeSaliency saliency;
+            saliency.saliency_local = 0.9f;
+            saliency.plc_intrinsic = 0.8f;
+            node_->saliency_state_.keyframes.push_back(saliency);
+        }
+        for (int i = 1; i < 41; ++i) {
+            node_->graph_.adj[i - 1].push_back({i, false});
+            node_->graph_.adj[i].push_back({i - 1, false});
+        }
+        node_->graph_.robot_ix = 40;
+        auto map = std::make_shared<nav_msgs::msg::OccupancyGrid>();
+        map->info.resolution = 1.0f;
+        map->info.width = 60;
+        map->info.height = 20;
+        map->info.origin.position.x = -5.0;
+        map->info.origin.position.y = -10.0;
+        map->data.assign(1200, 0);
+        node_->occupancy_map_ = map;
     }
-    void sendEvent(const std::string& name) {
+    std::size_t failedTargets() const { return node_->failed_targets_.size(); }
+    void sendEvent(const std::string& name, const int index = 1) {
         auto msg = std::make_shared<std_msgs::msg::String>();
-        msg->data = "{\"event\":\"" + name + "\"}";
+        msg->data = "{\"event\":\"" + name +
+                    "\",\"index\":" + std::to_string(index) + "}";
         node_->onPlannerEvent(msg);
     }
     void maybeTrigger() { node_->maybeTrigger(); }
-    std::vector<float> viewOverlap(const float keyframe_yaw,
-                                   const float robot_x) {
-        node_->graph_.keyframes.resize(1);
-        node_->graph_.keyframes[0].pose.orientation =
-            Eigen::AngleAxisf(keyframe_yaw, Eigen::Vector3f::UnitZ());
-        ALCCandidate c;
-        c.keyframe_ixs = {0};
-        c.rep_pose = Pose6f{};
-        Pose6f robot;
-        robot.position.x() = robot_x;
-        node_->use_approach_heading_ = true;
-        node_->setViewOverlap(c, robot);
-        return c.view_overlap;
-    }
     void sendInfo(const int ref_id) {
         auto info = std::make_shared<rtabmap_msgs::msg::Info>();
         info->ref_id = ref_id;
@@ -136,9 +139,6 @@ protected:
         map->graph.poses_id = {node_id};
         map->graph.poses = {node.pose};
         node_->onMapData(map);
-    }
-    double secSinceAlc() const {
-        return (node_->now() - node_->last_alc_time_).seconds();
     }
     bool goalHandleHeld() const { return node_->nav_goal_handle_ != nullptr; }
 
@@ -182,17 +182,35 @@ TEST_F(ALCPlannerNodeNavigationTest, ArrivalFinishesWithoutSpin) {
     ASSERT_TRUE(spinUntil([this] { return serverReady(); }, 5.0));
     startAttempt();
     ASSERT_TRUE(spinUntil([this] { return goalHandleHeld(); }, 2.0));
+    EXPECT_EQ(goals_[0]->get_goal()->behavior_tree, "view.xml");
     goals_[0]->succeed(std::make_shared<NavigateToPose::Result>());
     ASSERT_TRUE(spinUntil([this] { return finished_ == 1; }, 0.8));
     EXPECT_EQ(state(), PlannerState::EVALUATING);
-    EXPECT_LT(secSinceAlc(), 5.0);
 }
 
-TEST_F(ALCPlannerNodeNavigationTest, FailedAttemptRestartsTriggerDecay) {
-    startAttempt();  // no discovery yet, or goal left to time out
-    ASSERT_TRUE(
-        spinUntil([this] { return state() == PlannerState::EVALUATING; }, 4.0));
-    EXPECT_LT(secSinceAlc(), 5.0);
+TEST_F(ALCPlannerNodeNavigationTest, FirstGoalOfARouteIsADecisionPoint) {
+    ASSERT_TRUE(spinUntil([this] { return serverReady(); }, 5.0));
+    planCandidate();
+    sendEvent("recovery_tree_started");
+    sendEvent("goal_sent", 1);  // later waypoint: the robot is driving
+    EXPECT_EQ(state(), PlannerState::EVALUATING);
+    sendEvent("goal_sent", 0);
+    EXPECT_EQ(state(), PlannerState::NAVIGATING_TO_ALC);
+}
+
+TEST_F(ALCPlannerNodeNavigationTest, TargetWithoutClosureIsNotTriedAgain) {
+    ASSERT_TRUE(spinUntil([this] { return serverReady(); }, 5.0));
+    planCandidate();
+    maybeTrigger();
+    ASSERT_TRUE(spinUntil([this] { return goals_.size() == 1u; }, 2.0));
+    ASSERT_TRUE(spinUntil([this] { return goalHandleHeld(); }, 2.0));
+    goals_[0]->abort(std::make_shared<NavigateToPose::Result>());
+    ASSERT_TRUE(spinUntil([this] { return finished_ == 1; }, 2.0));
+    maybeTrigger();
+    EXPECT_EQ(failedTargets(), 1u);
+    ASSERT_TRUE(spinUntil([this] { return goals_.size() == 2u; }, 2.0));
+    EXPECT_NE(goals_[0]->get_goal()->pose.pose.position.x,
+              goals_[1]->get_goal()->pose.pose.position.x);
 }
 
 TEST_F(ALCPlannerNodeNavigationTest, InfoBeforeMapDataLocatesTheRobot) {
@@ -215,13 +233,6 @@ TEST_F(ALCPlannerNodeNavigationTest, WaitsForTheRouteToFinish) {
     EXPECT_EQ(state(), PlannerState::EVALUATING);
     sendEvent("route_completed");
     EXPECT_EQ(state(), PlannerState::NAVIGATING_TO_ALC);
-}
-
-TEST_F(ALCPlannerNodeNavigationTest, ViewOverlapComparesArrivalWithKeyframe) {
-    // Arriving from -x means facing +x (yaw 0).
-    EXPECT_FLOAT_EQ(viewOverlap(0.0f, -2.0f).at(0), 1.0f);
-    EXPECT_NEAR(viewOverlap(0.5f, -2.0f).at(0), 0.5f, 1e-4f);
-    EXPECT_FLOAT_EQ(viewOverlap(2.6f, -2.0f).at(0), 0.0f);
 }
 
 }  // namespace alc_planner

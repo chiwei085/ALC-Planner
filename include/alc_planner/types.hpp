@@ -37,8 +37,7 @@ struct KeyframeSaliency
 struct GraphEdge
 {
     int to = -1;
-    float dist = 0.0f;
-    float variance = 0.0f;
+    bool closure = false;
 };
 
 struct GraphState
@@ -48,7 +47,6 @@ struct GraphState
     std::unordered_map<int, int> node_to_ix;
     std::vector<int> ix_to_node;
     int robot_ix = -1;
-    std::uint64_t version = 0;
 };
 
 struct SaliencyState
@@ -57,65 +55,43 @@ struct SaliencyState
     float plc_calibration = 1.0f;
 };
 
-enum class MapDistSource : std::uint8_t
-{
-    ASTAR = 0,
-    EUCLIDEAN_FALLBACK = 1,
-    UNAVAILABLE = 2,
-};
-
 struct ALCCandidate
 {
     int tau_ix = -1;
     Pose6f rep_pose;
-    std::vector<int> keyframe_ixs;
-    // Camera view overlap on arrival per keyframe; empty = full overlap.
-    std::vector<float> view_overlap;
-    float euclidean_dist = 0.0f;
-    float graph_dist = 0.0f;
-    float graph_dist_var = 0.0f;
-    float map_dist = 0.0f;
-    MapDistSource map_dist_source = MapDistSource::UNAVAILABLE;
     float P_lc = 0.0f;
-    float delta_U = 0.0f;
-    float delta_U_ub = 0.0f;
-    float P_lc_ub = 0.0f;
-    float reward = 0.0f;
-    float reward_ub = 0.0f;
-    float approach_yaw_delta = 0.0f;
-    float pose_uncertainty_lambda = 0.0f;
-    float rotation_risk = 0.0f;
-    float reward_before_rotation_risk = 0.0f;
-    bool is_lighthouse = false;
-    float best_plc_intrinsic = 0.0f;
+    // Entropy of the robot pose relative to the keyframe that one closure
+    // removes: a log ratio of covariances, so it has no unit.
+    float gain = 0.0f;
+    float position_std = 0.0f;
+    float euclidean_dist = 0.0f;
+    float map_dist = 0.0f;
+    float cost = 0.0f;
+    float score = 0.0f;
 };
 
 struct Params
 {
-    float camera_hfov_rad = 1.0f;
     float cv_L = 3.0f;
     float cv_G = 3.0f;
+    float cs = 0.3f;
     float cs_lighthouse = 0.6f;
     float d_min_lighthouse = 5.0f;
-    float cl = 10.0f;
-    float ct = 0.1f;
-    float cE = 15.0f;
-    float cG = 3.0f;
-    float cs = 0.3f;
-    float eps_dbscan = 1.5f;
-    int min_pts = 2;
-    float theta_max = 0.5f;
-    float lambda_decay = 0.01f;
-    float alpha_cov = 0.3f;
-    int tau_min_revisit = 15;
-    float plc_min_revisit = 0.05f;
-    float map_dist_min_revisit = 1.0f;
-    bool use_variance_uncertainty = false;
-    bool rotation_risk_enabled = false;
-    float rotation_risk_weight = 1.0f;
-    float rotation_risk_reference_det = 1.0e-6f;
-    float rotation_risk_max_lambda = 5.0f;
-    float rotation_risk_max_yaw_rad = 3.14159265358979323846f;
+
+    // Drift and closure noise of the R2 with RTAB-Map, fitted on 108 closure
+    // chains up to 15.6 m. Straight driving added no measurable yaw drift.
+    float drift_trans_var_per_m = 5.4e-4f;
+    float drift_yaw_var_per_rad = 3.2e-3f;
+    float closure_trans_var = 4.0e-3f;
+    float closure_yaw_var = 7.3e-3f;
+
+    // Free room beside the car: goal clearance 0.22 m minus half width 0.115.
+    // A position error above it can put a mapped passage into a wall.
+    float max_position_std_m = 0.105f;
+    float turning_radius_m = 0.5f;
+    // Nav2 goal checker tolerances.
+    float arrival_xy_m = 0.35f;
+    float arrival_yaw_rad = 0.5f;
 };
 
 }  // namespace alc_planner

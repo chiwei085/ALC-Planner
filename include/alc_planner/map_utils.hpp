@@ -6,8 +6,6 @@
 #include <cmath>
 #include <vector>
 
-#include "alc_planner/types.hpp"
-
 namespace alc_planner
 {
 
@@ -36,12 +34,5 @@ inline GridCell toCell(const Eigen::Vector3f& pos,
         static_cast<int>(std::floor((pos.x() - origin_x) / resolution)),
     };
 }
-
-float estimateCoverageRatio(const nav_msgs::msg::OccupancyGrid* map);
-
-void buildSaliencyOverlay(const GraphState& graph,
-                          const SaliencyState& saliency_state,
-                          const nav_msgs::msg::OccupancyGrid& map,
-                          std::vector<float>& overlay);
 
 }  // namespace alc_planner

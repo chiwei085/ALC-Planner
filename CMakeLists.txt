@@ -14,6 +14,11 @@ if(CMAKE_COMPILER_IS_GNUCXX)
   add_compile_options(-Wno-psabi)
 endif()
 
+# Eigen is an order of magnitude slower without optimization.
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
   set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
@@ -39,15 +44,10 @@ find_package(visualization_msgs REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 
 add_library(alc_planner_core
-  src/core/map_utils.cpp
   src/core/slam_graph_planner.cpp
   src/core/saliency_evaluator.cpp
-  src/core/uncertainty_metrics.cpp
-  src/core/candidate_builder.cpp
-  src/core/reward_evaluator.cpp
-  src/core/bnb_selector.cpp
   src/core/path_planner.cpp
-  src/core/trigger_policy.cpp
+  src/core/revisit_selector.cpp
 )
 set_target_properties(alc_planner_core PROPERTIES UNITY_BUILD ON)
 
@@ -124,26 +124,14 @@ ament_export_dependencies(eigen3_cmake_module Eigen3 nav_msgs)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
-  ament_add_gtest(test_uncertainty_metrics test/test_uncertainty_metrics.cpp)
-  target_link_libraries(test_uncertainty_metrics alc_planner_core)
-
   ament_add_gtest(test_saliency_evaluator test/test_saliency_evaluator.cpp)
   target_link_libraries(test_saliency_evaluator alc_planner_core)
 
-  ament_add_gtest(test_candidate_builder test/test_candidate_builder.cpp)
-  target_link_libraries(test_candidate_builder alc_planner_core)
-
-  ament_add_gtest(test_reward_evaluator test/test_reward_evaluator.cpp)
-  target_link_libraries(test_reward_evaluator alc_planner_core)
+  ament_add_gtest(test_revisit_selector test/test_revisit_selector.cpp)
+  target_link_libraries(test_revisit_selector alc_planner_core)
 
   ament_add_gtest(test_path_planner test/test_path_planner.cpp)
   target_link_libraries(test_path_planner alc_planner_core)
-
-  ament_add_gtest(test_bnb_selector test/test_bnb_selector.cpp)
-  target_link_libraries(test_bnb_selector alc_planner_core)
-
-  ament_add_gtest(test_trigger_policy test/test_trigger_policy.cpp)
-  target_link_libraries(test_trigger_policy alc_planner_core)
 
   ament_add_gtest(test_planner_node_params test/test_planner_node_params.cpp)
   target_link_libraries(test_planner_node_params alc_planner_node_lib)
@@ -155,9 +143,6 @@ if(BUILD_TESTING)
     ENV ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1)
   target_link_libraries(test_planner_node_navigation alc_planner_node_lib)
   ament_target_dependencies(test_planner_node_navigation rclcpp rclcpp_action)
-
-  ament_add_gtest(test_coverage test/test_coverage.cpp)
-  target_link_libraries(test_coverage alc_planner_core)
 
   # Humble's GoogleTest relies on a transitive cstdint include absent in newer GCC.
   if(TARGET gtest AND (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
