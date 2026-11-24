@@ -45,6 +45,9 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
          rclcpp::Parameter("degraded_exploration_window_sec", 42.0),
          rclcpp::Parameter("degraded_exploration_min_events", 5),
          rclcpp::Parameter("use_approach_heading", false),
+         rclcpp::Parameter("map_data_topic", "/test/mapData"),
+         rclcpp::Parameter("info_topic", "/test/info"),
+         rclcpp::Parameter("map_topic", "/test/map"),
          rclcpp::Parameter("planner_event_topic", "/test/planner_events")});
 
     const auto node = std::make_shared<ALCPlannerNode>(options);
@@ -90,6 +93,9 @@ TEST(ALCPlannerNode, DeclaresAndUsesParameterOverrides) {
     EXPECT_FALSE(node->get_parameter("use_approach_heading").as_bool());
     EXPECT_EQ(node->get_parameter("planner_event_topic").as_string(),
               "/test/planner_events");
+    EXPECT_EQ(node->count_subscribers("/test/mapData"), 1u);
+    EXPECT_EQ(node->count_subscribers("/test/info"), 1u);
+    EXPECT_EQ(node->count_subscribers("/test/map"), 1u);
 
     rclcpp::shutdown();
 }

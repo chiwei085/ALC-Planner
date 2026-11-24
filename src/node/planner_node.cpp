@@ -132,13 +132,16 @@ ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
         create_publisher<std_msgs::msg::String>(planner_event_topic_, 10);
 
     sub_map_data_ = create_subscription<rtabmap_msgs::msg::MapData>(
-        "/rtabmap/mapData", rclcpp::SystemDefaultsQoS(),
+        declare_parameter<std::string>("map_data_topic", "/rtabmap/mapData"),
+        rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMapData, this, std::placeholders::_1));
     sub_info_ = create_subscription<rtabmap_msgs::msg::Info>(
-        "/rtabmap/info", rclcpp::SystemDefaultsQoS(),
+        declare_parameter<std::string>("info_topic", "/rtabmap/info"),
+        rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onInfo, this, std::placeholders::_1));
     sub_map_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
-        "/map", rclcpp::SystemDefaultsQoS(),
+        declare_parameter<std::string>("map_topic", "/map"),
+        rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMap, this, std::placeholders::_1));
     sub_localization_pose_ =
         create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
@@ -285,8 +288,9 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
     else {
         RCLCPP_WARN_ONCE(
             get_logger(),
-            "[ALCPlanner] /rtabmap/info stats_keys did not match any known "
-            "words-recognized key; S_L normalization may be incorrect.");
+            "[ALCPlanner] %s stats_keys did not match any known "
+            "words-recognized key; S_L normalization may be incorrect.",
+            sub_info_->get_topic_name());
     }
 
     const auto robot_it = graph_.node_to_ix.find(msg->ref_id);

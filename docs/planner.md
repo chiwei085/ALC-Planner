@@ -548,6 +548,8 @@ EVALUATING
 | `/rtabmap/info`      | Loop closure 事件（`loopClosureId > 0`）；`wordsRecognized` 計數  |
 | `/map`               | Occupancy map，A* 使用                                            |
 
+上表為預設值，可用參數 `map_data_topic`、`info_topic`、`map_topic` 覆寫（RTAB-Map 未設 namespace 時為 `/mapData`、`/info`）。
+
 ### 發布
 
 | Topic / Action          | 用途                  |
