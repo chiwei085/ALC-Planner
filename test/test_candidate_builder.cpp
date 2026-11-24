@@ -125,6 +125,20 @@ TEST(CandidateBuilder, FilterExcludesSmallGraphDist) {
     EXPECT_EQ(nodeIdFromTau(graph, candidates.front()), 3);
 }
 
+TEST(CandidateBuilder, FilterExcludesDisconnectedNodes) {
+    GraphState graph = makeGraph();
+    SaliencyState saliency_state;
+    graph.robot_ix =
+        addNode(graph, saliency_state, 0, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+    addNode(graph, saliency_state, 1, {4.0f, 0.0f, 0.0f}, 0.7f, 0.7f);
+    addNode(graph, saliency_state, 2, {5.0f, 0.0f, 0.0f}, 0.8f, 0.8f);
+    addBiEdge(graph, 1, 2, 1.0f);
+    graph.version = 1;
+
+    CandidateBuilder builder(makeParams());
+    EXPECT_TRUE(builder.build(graph, saliency_state).empty());
+}
+
 TEST(CandidateBuilder, FilterExcludesFarEuclidean) {
     GraphState graph = makeGraph();
     SaliencyState saliency_state;

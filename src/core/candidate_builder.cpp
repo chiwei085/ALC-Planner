@@ -148,7 +148,8 @@ std::vector<int> CandidateBuilder::filterKeyframes(
         }
 
         const float graph_dist = distAt(dist_map, ix);
-        if (graph_dist < params_.cG) {
+        // Not connected in the graph: the gain is undefined (0 * inf = NaN).
+        if (!std::isfinite(graph_dist) || graph_dist < params_.cG) {
             continue;
         }
 
