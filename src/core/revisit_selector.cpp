@@ -232,7 +232,9 @@ RevisitDecision RevisitSelector::select(
 
         if (std_m <= params_.max_position_std_m ||
             ix >= static_cast<int>(saliency.keyframes.size()) ||
-            samePlace(robot, target) ||
+            // Nav2 checks position only: it would call this reached at once.
+            std::hypot(target.x - robot.x, target.y - robot.y) <
+                params_.arrival_xy_m ||
             std::any_of(excluded.begin(), excluded.end(),
                         [&](const Pose6f& pose) {
                             return samePlace(planar(pose), target);
