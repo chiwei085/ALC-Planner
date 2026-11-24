@@ -86,12 +86,50 @@ std::vector<int> connectedTo(const GraphState& graph, const int start) {
     return order;
 }
 
+double turnAngle(const Planar& from, const Planar& to) {
+    const double bearing = std::atan2(to.y - from.y, to.x - from.x);
+    return std::abs(wrap(bearing - from.yaw)) +
+           std::abs(wrap(to.yaw - bearing));
+}
+
+// Robot covariance relative to the keyframe after a closure there and a direct
+// drive of `distance` back, in the frame of that drive.
+Eigen::Matrix3d closeAndReturn(const double distance, const Planar& keyframe,
+                               const Planar& robot, const Params& params) {
+    const double bearing =
+        std::atan2(robot.y - keyframe.y, robot.x - keyframe.x);
+    // Yaw error made before the drive swings it sideways over its length.
+    const double before =
+        params.closure_yaw_var +
+        params.drift_yaw_var_per_rad * std::abs(wrap(bearing - keyframe.yaw));
+    const double after =
+        params.drift_yaw_var_per_rad * std::abs(wrap(robot.yaw - bearing));
+    const double per_m = params.drift_yaw_var_per_m;
+    const double d = distance;
+    const double trans =
+        params.closure_trans_var + params.drift_trans_var_per_m * d;
+    Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+    cov(0, 0) = trans;
+    cov(1, 1) = trans + d * d * before + d * d * d * per_m / 3.0;
+    cov(2, 2) = before + after + d * per_m;
+    cov(1, 2) = cov(2, 1) = d * before + d * d * per_m / 2.0;
+    return cov;
+}
+
+float gainOver(const float log_det, const double distance,
+               const Planar& keyframe, const Planar& robot,
+               const Params& params) {
+    return static_cast<float>(
+        0.5 *
+        (log_det -
+         std::log(
+             closeAndReturn(distance, keyframe, robot, params).determinant())));
+}
+
 double drivingCost(const double distance, const Planar& robot,
                    const Planar& target, const double turning_radius) {
     // The car turns on an arc: towards the target, then to its view.
-    const double bearing = std::atan2(target.y - robot.y, target.x - robot.x);
-    return distance + turning_radius * (std::abs(wrap(bearing - robot.yaw)) +
-                                        std::abs(wrap(target.yaw - bearing)));
+    return distance + turning_radius * turnAngle(robot, target);
 }
 
 }  // namespace
@@ -139,6 +177,7 @@ RevisitDecision RevisitSelector::select(
                     params_.drift_trans_var_per_m * std::hypot(step.x, step.y) +
                     kMinVariance;
                 yaw = params_.drift_yaw_var_per_rad * std::abs(step.yaw) +
+                      params_.drift_yaw_var_per_m * std::hypot(step.x, step.y) +
                       kMinVariance;
             }
             const Eigen::Matrix3d info =
@@ -161,11 +200,6 @@ RevisitDecision RevisitSelector::select(
         return decision;
     }
 
-    const Eigen::Matrix3d closure_info =
-        Eigen::Vector3d(1.0 / params_.closure_trans_var,
-                        1.0 / params_.closure_trans_var,
-                        1.0 / params_.closure_yaw_var)
-            .asDiagonal();
     const Planar robot = planar(at(graph.robot_ix));
     const auto samePlace = [this](const Planar& a, const Planar& b) {
         return std::hypot(a.x - b.x, a.y - b.y) < params_.arrival_xy_m &&
@@ -215,11 +249,14 @@ RevisitDecision RevisitSelector::select(
         candidate.P_lc = std::clamp(
             node.plc_intrinsic * saliency.plc_calibration, 0.0f, 1.0f);
         candidate.position_std = std_m;
-        candidate.gain = static_cast<float>(
-            0.5 * std::log((Eigen::Matrix3d::Identity() + cov * closure_info)
-                               .determinant()));
         candidate.euclidean_dist = static_cast<float>(
             std::hypot(target.x - robot.x, target.y - robot.y));
+        candidate.log_det = static_cast<float>(std::log(cov.determinant()));
+        candidate.gain = gainOver(candidate.log_det, candidate.euclidean_dist,
+                                  target, robot, params_);
+        if (candidate.gain <= 0.0f) {
+            continue;
+        }
         // Upper bound: a path is never shorter than the straight line.
         candidate.score =
             static_cast<float>(candidate.P_lc * candidate.gain /
@@ -246,7 +283,12 @@ RevisitDecision RevisitSelector::select(
         candidate.cost = static_cast<float>(
             drivingCost(candidate.map_dist, robot, planar(candidate.rep_pose),
                         params_.turning_radius_m));
+        candidate.gain = gainOver(candidate.log_det, candidate.map_dist,
+                                  planar(candidate.rep_pose), robot, params_);
         candidate.score = candidate.P_lc * candidate.gain / candidate.cost;
+        if (candidate.gain <= 0.0f) {
+            continue;
+        }
         if (!decision.best || candidate.score > decision.best->score) {
             decision.best = candidate;
         }

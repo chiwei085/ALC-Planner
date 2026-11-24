@@ -14,7 +14,7 @@
 
 1. 整個 pose graph 組成資訊矩陣（odometry 漂移：每公尺平移、每弧度轉向；閉環雜訊），固定機器人位姿，求每個舊 keyframe 的相對協方差 Σ。
 2. 位置標準差超過車旁的間隙（`max_position_std_m`）才考慮回訪。
-3. `gain = ½ ln det(I + Σ Λ)`（無單位），`score = P_lc × gain / cost`，`cost` 是 A* 距離加上 `turning_radius_m` × 轉向角。
+3. `gain = ½ ln(det Σ / det Σ′)`（無單位），Σ′ 是「在該處閉環再直接開回」的協方差，`gain ≤ 0` 就不去，因此單純開遠不會觸發；`score = P_lc × gain / cost`，`cost` 是 A* 距離加上 `turning_radius_m` × 轉向角。
 4. 目標朝向即 keyframe 朝向，以 `nav_behavior_tree` 沿直線到達。
 5. 只在路線之間決策（`route_completed`，或路線第一個目標剛送出）。回訪後沒有閉環的目標不再嘗試。
 

@@ -109,6 +109,7 @@ Params ALCPlannerNode::declarePlannerParams() {
              {"d_min_lighthouse", &params.d_min_lighthouse},
              {"drift_trans_var_per_m", &params.drift_trans_var_per_m},
              {"drift_yaw_var_per_rad", &params.drift_yaw_var_per_rad},
+             {"drift_yaw_var_per_m", &params.drift_yaw_var_per_m},
              {"closure_trans_var", &params.closure_trans_var},
              {"closure_yaw_var", &params.closure_yaw_var},
              {"max_position_std_m", &params.max_position_std_m},

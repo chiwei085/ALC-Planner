@@ -76,6 +76,17 @@ TEST(RevisitSelector, LongLoopTriggersWhateverItsLength) {
     }
 }
 
+// Driving away for 100 m makes the start very uncertain, but nothing here
+// overlaps its map: there is no reason to go back.
+TEST(RevisitSelector, DrivingAwayStaysSilent) {
+    World w;
+    w.freeMap(120.0f);
+    for (int i = 0; i <= 200; ++i) {
+        w.add(0.5f * static_cast<float>(i), 0.0f, 0.0f);
+        ASSERT_FALSE(w.select().best) << i;
+    }
+}
+
 TEST(RevisitSelector, LongerLoopsAreMoreUncertainAndGainMore) {
     const auto small = loop(10.0f).select();
     const auto large = loop(50.0f).select();
@@ -116,14 +127,14 @@ TEST(RevisitSelector, CorridorReturnTargetsTheOppositeView) {
     EXPECT_GT(decision.best->rep_pose.forward().x(), 0.9f);
 }
 
-// The turn on the spot at the corridor's end costs yaw, and yaw costs metres.
+// Turning costs yaw, and yaw costs metres.
 TEST(RevisitSelector, TurningIsWorseThanDrivingStraight) {
     World straight;
     World turning;
     straight.freeMap(30.0f);
     turning.freeMap(30.0f);
-    for (int i = 0; i <= 20; ++i) {
-        const auto x = static_cast<float>(i);
+    for (int i = 0; i <= 8; ++i) {
+        const auto x = 0.5f * static_cast<float>(i);
         straight.add(x, 0.0f, 0.0f);
         turning.add(x, 0.0f, i % 2 ? 0.3f : -0.3f);
     }

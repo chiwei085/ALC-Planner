@@ -125,7 +125,8 @@ TEST(PathPlanner, StartOnOccupiedCell) {
     const float dist =
         planner.computeDist(pos(0.5f, 0.5f), pos(4.5f, 4.5f), map);
     // Start/goal bypass occupancy check: 3D→2D projection may place the robot
-    // inside an occupied cell due to resolution mismatch or sensor self-returns.
+    // inside an occupied cell due to resolution mismatch or sensor
+    // self-returns.
     EXPECT_TRUE(std::isfinite(dist));
 }
 
@@ -175,8 +176,9 @@ TEST(PathPlanner, SaliencyWeightedAStarPrefersLowerTotalWeightedCost) {
     PathPlanner planner;
     const float dist =
         planner.computeDist(pos(0.5f, 1.5f), pos(4.5f, 1.5f), map, &overlay);
-    EXPECT_GT(dist, 4.0f);
-    EXPECT_LT(dist, 8.0f);
+    // Diagonal onto the salient row, two steps along it, diagonal back, all at
+    // weight 1. The straight line costs 3 * 2 + 1 = 7.
+    EXPECT_NEAR(dist, 2.0f + 2.0f * std::sqrt(2.0f), 1e-4f);
 }
 
 }  // namespace alc_planner

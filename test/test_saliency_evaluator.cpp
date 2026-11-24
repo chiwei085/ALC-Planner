@@ -135,17 +135,33 @@ TEST(SaliencyEvaluator, LoopClosureCalibrationIsClampedHigh) {
     EXPECT_FLOAT_EQ(evaluator.loopClosureCalibration(), 2.0f);
 }
 
+TEST(SaliencyEvaluator, LoopClosureCalibrationFollowsSuccessRate) {
+    Params params;
+    SaliencyEvaluator evaluator(params);
+    for (const bool success : {true, true, true, false}) {
+        evaluator.observeLoopClosureAttempt(success);
+    }
+
+    // Success rate 3/4 over the prior rate 1/2.
+    EXPECT_FLOAT_EQ(evaluator.loopClosureCalibration(), 1.5f);
+}
+
 TEST(SaliencyEvaluator, UpdateStoresLoopClosureCalibrationSeparately) {
     Params params;
     GraphState graph;
     SaliencyState saliency_state;
     const int ix = addKeyframe(graph, saliency_state, 1, {10, 20, 30, 40});
+    // A second node without shared words makes S_G, and so the PLC, nonzero.
+    addKeyframe(graph, saliency_state, 2, {50, 60, 70, 80});
 
     SaliencyEvaluator baseline(params);
     baseline.observeWordsRecognized(4);
     baseline.update(graph, saliency_state);
     const float base_plc =
         saliency_state.keyframes[static_cast<std::size_t>(ix)].plc_intrinsic;
+    // S_L = S_G = 1.
+    EXPECT_NEAR(base_plc, std::tanh(params.cv_L) * std::tanh(params.cv_G),
+                1e-4f);
     EXPECT_FLOAT_EQ(saliency_state.plc_calibration, 1.0f);
 
     SaliencyEvaluator calibrated(params);

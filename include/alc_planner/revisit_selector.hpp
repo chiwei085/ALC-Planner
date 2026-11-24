@@ -13,8 +13,7 @@ namespace alc_planner
 
 struct RevisitDecision
 {
-    // Largest position error, over all old keyframes, of the robot relative to
-    // that keyframe. Logged whether or not anything is worth a revisit.
+    // Largest position error of the robot relative to any keyframe. Logged whether or not anything is worth a revisit.
     float max_position_std = 0.0f;
     std::optional<ALCCandidate> best;
 };

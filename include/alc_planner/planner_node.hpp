@@ -31,6 +31,7 @@ public:
 
 private:
     friend class ALCPlannerNodeNavigationTest;
+    friend class ALCPlannerNodeParamsTest;
     void onMapData(const rtabmap_msgs::msg::MapData::SharedPtr msg);
     void onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg);
     void onMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);

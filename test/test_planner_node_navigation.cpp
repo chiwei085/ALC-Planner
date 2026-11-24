@@ -6,6 +6,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "alc_planner/planner_node.hpp"
@@ -14,6 +15,7 @@ namespace alc_planner
 {
 
 using NavigateToPose = nav2_msgs::action::NavigateToPose;
+using Spin = nav2_msgs::action::Spin;
 using ServerGoal = rclcpp_action::ServerGoalHandle<NavigateToPose>;
 
 // Fake Nav2: accepts every goal and never finishes one on its own, so the
@@ -45,10 +47,19 @@ protected:
             [this](const std::shared_ptr<ServerGoal> goal) {
                 goals_.push_back(goal);
             });
+        spin_server_ = rclcpp_action::create_server<Spin>(
+            fake_, "/spin",
+            [this](const auto&, const auto&) {
+                ++spin_requests_;
+                return rclcpp_action::GoalResponse::REJECT;
+            },
+            [](const auto&) { return rclcpp_action::CancelResponse::REJECT; },
+            [](const auto&) {});
         events_ = fake_->create_subscription<std_msgs::msg::String>(
             "/test_alc_nav/events", 10,
             [this](const std_msgs::msg::String::SharedPtr msg) {
                 if (msg->data.find("alc_finished") != std::string::npos) {
+                    last_finished_ = msg->data;
                     ++finished_;
                 }
             });
@@ -76,7 +87,8 @@ protected:
     }
 
     bool serverReady() const {
-        return node_->nav_client_->action_server_is_ready();
+        return node_->nav_client_->action_server_is_ready() &&
+               node_->spin_client_->action_server_is_ready();
     }
     PlannerState state() const { return node_->slam_graph_planner_.state(); }
     bool timeoutArmed() const { return node_->nav_timeout_timer_ != nullptr; }
@@ -84,13 +96,15 @@ protected:
     std::size_t wordCount() const {
         return node_->graph_.keyframes.at(0).word_ids.size();
     }
-    // A robot that drove a long winding way from node 1, with a free map.
+    // A robot that drove 20 m out, winding, and came back beside its start.
     void planCandidate() {
         for (int id = 1; id <= 41; ++id) {
             Keyframe keyframe;
             keyframe.node_id = id;
             keyframe.word_ids = {1, 2, 3};
-            keyframe.pose.position.x() = static_cast<float>(id - 1);
+            keyframe.pose.position.x() =
+                static_cast<float>(id <= 21 ? id - 1 : 41 - id);
+            keyframe.pose.position.y() = id <= 21 ? 0.0f : 1.0f;
             keyframe.pose.orientation = Eigen::AngleAxisf(
                 id % 2 ? 0.4f : -0.4f, Eigen::Vector3f::UnitZ());
             node_->graph_.node_to_ix[id] = id - 1;
@@ -146,11 +160,14 @@ protected:
     std::shared_ptr<ALCPlannerNode> node_;
     std::shared_ptr<rclcpp::Node> fake_;
     rclcpp_action::Server<NavigateToPose>::SharedPtr server_;
+    rclcpp_action::Server<Spin>::SharedPtr spin_server_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr events_;
     rclcpp::executors::SingleThreadedExecutor executor_;
     std::vector<std::shared_ptr<ServerGoal>> goals_;
     int cancel_requests_ = 0;
+    int spin_requests_ = 0;
     int finished_ = 0;
+    std::string last_finished_;
 };
 
 TEST_F(ALCPlannerNodeNavigationTest,
@@ -187,6 +204,12 @@ TEST_F(ALCPlannerNodeNavigationTest, ArrivalFinishesWithoutSpin) {
     EXPECT_EQ(goals_[0]->get_goal()->behavior_tree, "view.xml");
     goals_[0]->succeed(std::make_shared<NavigateToPose::Result>());
     ASSERT_TRUE(spinUntil([this] { return finished_ == 1; }, 0.8));
+    for (const char* field : {"\"phase\":\"navigation\"", "\"success\":true",
+                              "\"reason\":\"target_reached\""}) {
+        EXPECT_NE(last_finished_.find(field), std::string::npos)
+            << last_finished_;
+    }
+    EXPECT_EQ(spin_requests_, 0);
     EXPECT_EQ(state(), PlannerState::EVALUATING);
 }
 

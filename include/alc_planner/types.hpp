@@ -60,9 +60,12 @@ struct ALCCandidate
     int tau_ix = -1;
     Pose6f rep_pose;
     float P_lc = 0.0f;
-    // Entropy of the robot pose relative to the keyframe that one closure
-    // removes: a log ratio of covariances, so it has no unit.
+    // Entropy of the robot pose relative to the keyframe, now against after
+    // closing there and driving straight back: a log ratio of covariances, so
+    // it has no unit. Driving away needs no revisit: its error is the direct
+    // drive's own.
     float gain = 0.0f;
+    float log_det = 0.0f;
     float position_std = 0.0f;
     float euclidean_dist = 0.0f;
     float map_dist = 0.0f;
@@ -79,9 +82,11 @@ struct Params
     float d_min_lighthouse = 5.0f;
 
     // Drift and closure noise of the R2 with RTAB-Map, fitted on 108 closure
-    // chains up to 15.6 m. Straight driving added no measurable yaw drift.
+    // chains up to 15.6 m. They cannot tell yaw drift per metre from 0 to 1e-3;
+    // zero is not physical, so a value inside that range is assumed.
     float drift_trans_var_per_m = 5.4e-4f;
-    float drift_yaw_var_per_rad = 3.2e-3f;
+    float drift_yaw_var_per_rad = 2.9e-3f;
+    float drift_yaw_var_per_m = 3.0e-4f;
     float closure_trans_var = 4.0e-3f;
     float closure_yaw_var = 7.3e-3f;
 
