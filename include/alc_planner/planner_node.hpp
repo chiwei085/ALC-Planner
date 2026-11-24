@@ -42,6 +42,10 @@ private:
 
     void ingestNodes(const rtabmap_msgs::msg::MapData& msg);
     void ingestLinks(const rtabmap_msgs::msg::MapData& msg);
+    void updateRobotIx();
+    void maybeTrigger();
+    void setViewOverlap(ALCCandidate& candidate,
+                        const Pose6f& robot_pose) const;
     void checkLighthouse();
     void sendNavGoal(const ALCCandidate& target);
     void sendSpinGoal();
@@ -61,7 +65,11 @@ private:
     double degraded_exploration_alc_bonus_ = 0.0;
     double degraded_exploration_window_sec_ = 60.0;
     int degraded_exploration_min_events_ = 3;
+    bool spin_at_target_ = true;
     bool use_approach_heading_ = true;
+    int latest_ref_id_ = 0;
+    // Set by exploration events; false when nothing else drives the robot.
+    bool exploration_moving_ = false;
     std::string planner_event_topic_;
     Params params_;
     SaliencyEvaluator saliency_eval_;

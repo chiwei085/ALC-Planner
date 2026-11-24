@@ -56,7 +56,7 @@ float expectedExactProbability(const Params& params,
                                const ALCCandidate& candidate,
                                const SaliencyState& saliency_state) {
     const float l_minus = candidate.graph_dist + candidate.map_dist;
-    float prob_all_fail = 1.0f;
+    float best = 0.0f;
     for (const int keyframe_ix : candidate.keyframe_ixs) {
         if (keyframe_ix < 0 ||
             keyframe_ix >= static_cast<int>(saliency_state.keyframes.size())) {
@@ -67,9 +67,9 @@ float expectedExactProbability(const Params& params,
             saliency_state.keyframes[static_cast<std::size_t>(keyframe_ix)]
                 .plc_intrinsic *
             std::exp(-(l_minus * l_minus) / (params.cl * params.cl));
-        prob_all_fail *= (1.0f - plc_i);
+        best = std::max(best, plc_i);
     }
-    return 1.0f - prob_all_fail;
+    return best;
 }
 
 }  // namespace
@@ -266,6 +266,25 @@ TEST(RewardEvaluator, FillRewardPLCTwoKeyframes) {
     const float expected =
         expectedExactProbability(params, candidate, saliency_state);
     EXPECT_NEAR(candidate.P_lc, expected, 1e-4f);
+}
+
+TEST(RewardEvaluator, FillRewardPLCIsZeroWhenNoViewOverlaps) {
+    Params params;
+    GraphState graph;
+    SaliencyState saliency_state;
+    const int ix1 = addNode(graph, saliency_state, 1, 0.9f);
+    const int ix2 = addNode(graph, saliency_state, 2, 0.4f);
+
+    ALCCandidate candidate = makeCandidate();
+    candidate.keyframe_ixs = {ix1, ix2};
+    candidate.view_overlap = {0.0f, 0.0f};
+    RewardEvaluator evaluator(params);
+    evaluator.fillReward(candidate, saliency_state);
+    EXPECT_FLOAT_EQ(candidate.P_lc, 0.0f);
+
+    candidate.view_overlap = {0.0f, 0.5f};
+    evaluator.fillReward(candidate, saliency_state);
+    EXPECT_FLOAT_EQ(candidate.P_lc, 0.2f);
 }
 
 TEST(RewardEvaluator, FillRewardFormula) {

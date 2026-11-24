@@ -430,14 +430,13 @@ plc_i = clamp(plc_intrinsic_i × plc_calibration, 0, 1)
 l_minus = graph_dist + map_dist
 ```
 
-### Cluster P_LC（Ref1 Eq.9，精確值）
+### Cluster P_LC（與 Ref1 Eq.9 不同：不假設獨立）
 
 ```cpp
-float prob_all_fail = 1.0f;
+P_lc = 0.0f;   // 相鄰影格不獨立，取最佳視角；overlap = 到達時的視野重疊
 for (ix in keyframe_ixs) {
-    prob_all_fail *= (1.0f - plc_i);
+    P_lc = max(P_lc, overlap_i * plc_i);
 }
-P_lc = 1.0f - prob_all_fail;
 ```
 
 ### Cluster P_LC 上界（BNB 使用）
@@ -555,7 +554,7 @@ EVALUATING
 | Topic / Action          | 用途                  |
 | ----------------------- | --------------------- |
 | Nav2 `navigate_to_pose` | 導航至 τ*             |
-| 自訂 `rotate_in_place`  | 原地 360° 旋轉        |
+| Nav2 `spin`             | 原地 360° 旋轉；`spin_at_target=false` 時略過（無法原地旋轉的底盤） |
 | `/alc_planner/status`   | Planner 狀態（debug） |
 
 ### Saliency Proxy

@@ -84,15 +84,19 @@ void RewardEvaluator::fillReward(ALCCandidate& candidate,
         uncertaintyGainExact(candidate, params_.use_variance_uncertainty);
     const float l_minus = candidate.graph_dist + candidate.map_dist;
 
-    float prob_all_fail = 1.0f;
-    for (const int keyframe_ix : candidate.keyframe_ixs) {
-        const float plc_i =
-            calibratedPLCIntrinsic(saliency_state, keyframe_ix) *
-            expDistanceDecay(l_minus, params_.cl);
-        prob_all_fail *= (1.0f - plc_i);
+    // Neighbouring frames see the same scene, so they are not independent
+    // chances: the best view decides.
+    candidate.P_lc = 0.0f;
+    for (std::size_t i = 0; i < candidate.keyframe_ixs.size(); ++i) {
+        const float overlap = i < candidate.view_overlap.size()
+                                  ? candidate.view_overlap[i]
+                                  : 1.0f;
+        candidate.P_lc = std::max(
+            candidate.P_lc, overlap *
+                                calibratedPLCIntrinsic(
+                                    saliency_state, candidate.keyframe_ixs[i]) *
+                                expDistanceDecay(l_minus, params_.cl));
     }
-
-    candidate.P_lc = 1.0f - prob_all_fail;
     candidate.reward =
         -params_.ct * candidate.map_dist + candidate.P_lc * candidate.delta_U;
     candidate.reward_before_rotation_risk = candidate.reward;

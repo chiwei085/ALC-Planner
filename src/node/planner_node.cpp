@@ -10,6 +10,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -37,22 +38,6 @@ Pose6f toPose6f(const geometry_msgs::msg::Pose& pose_msg) {
                            static_cast<float>(pose_msg.orientation.z))
             .normalized();
     return pose;
-}
-
-std::optional<int> extractWordsRecognized(const rtabmap_msgs::msg::Info& msg) {
-    static const std::vector<std::string> kCandidates = {
-        "Keypoint/Words", "Keypoint/Words_Recognized",
-        "Keypoint/Words recognized", "Keypoint/Dictionary_size/words"};
-
-    for (const auto& key : kCandidates) {
-        for (std::size_t i = 0;
-             i < msg.stats_keys.size() && i < msg.stats_values.size(); ++i) {
-            if (msg.stats_keys[i] == key) {
-                return static_cast<int>(std::lround(msg.stats_values[i]));
-            }
-        }
-    }
-    return std::nullopt;
 }
 
 constexpr float kDefaultVariance = 1.0f;
@@ -167,6 +152,8 @@ Params ALCPlannerNode::declarePlannerParams() {
         return declare_parameter<int>(name, default_value);
     };
 
+    params.camera_hfov_rad =
+        declare_float("camera_hfov_rad", params.camera_hfov_rad);
     params.cv_L = declare_float("cv_L", params.cv_L);
     params.cv_G = declare_float("cv_G", params.cv_G);
     params.cs_lighthouse = declare_float("cs_lighthouse", params.cs_lighthouse);
@@ -209,6 +196,7 @@ Params ALCPlannerNode::declarePlannerParams() {
         declare_parameter<double>("degraded_exploration_window_sec", 60.0);
     degraded_exploration_min_events_ =
         declare_parameter<int>("degraded_exploration_min_events", 3);
+    spin_at_target_ = declare_parameter<bool>("spin_at_target", true);
     use_approach_heading_ = declare_parameter<bool>("use_approach_heading",
                                                     kDefaultUseApproachHeading);
     planner_event_topic_ = declare_parameter<std::string>(
@@ -224,6 +212,8 @@ void ALCPlannerNode::onMapData(
     }
 
     ingestNodes(*msg);
+    // RTAB-Map publishes info before the mapData that adds its ref node.
+    updateRobotIx();
     ingestLinks(*msg);
     saliency_eval_.update(graph_, saliency_state_);
     checkLighthouse();
@@ -237,6 +227,7 @@ void ALCPlannerNode::onMapData(
                 approachYawDelta(robot_pose, candidate.rep_pose);
             candidate.pose_uncertainty_lambda =
                 current_pose_uncertainty_lambda_;
+            setViewOverlap(candidate, robot_pose);
         }
     }
     for (auto& candidate : candidates_) {
@@ -256,9 +247,40 @@ void ALCPlannerNode::onMapData(
         }
     }
 
-    const double elapsed = last_alc_time_.nanoseconds() == 0
-                               ? std::numeric_limits<double>::infinity()
-                               : (now() - last_alc_time_).seconds();
+    maybeTrigger();
+
+    last_map_data_stamp_ = msg->header.stamp;
+    logGraphState();
+}
+
+void ALCPlannerNode::setViewOverlap(ALCCandidate& candidate,
+                                    const Pose6f& robot_pose) const {
+    const Eigen::Vector3f delta =
+        candidate.rep_pose.position - robot_pose.position;
+    const bool approach = use_approach_heading_ &&
+                          delta.head<2>().norm() > kMinApproachHeadingDistance;
+    const float arrival_yaw = approach ? std::atan2(delta.y(), delta.x())
+                                       : yawFromPose(candidate.rep_pose);
+    candidate.view_overlap.clear();
+    for (const int ix : candidate.keyframe_ixs) {
+        const float yaw =
+            yawFromPose(graph_.keyframes[static_cast<std::size_t>(ix)].pose);
+        candidate.view_overlap.push_back(std::max(
+            0.0f, 1.0f - std::abs(normalizeYawDelta(arrival_yaw - yaw)) /
+                             params_.camera_hfov_rad));
+    }
+}
+
+void ALCPlannerNode::maybeTrigger() {
+    // A moving robot keeps its goal: cancelling it costs more than waiting.
+    if (exploration_moving_) {
+        return;
+    }
+    // The trigger threshold decays from the first map, not from infinity.
+    if (last_alc_time_.nanoseconds() == 0) {
+        last_alc_time_ = now();
+    }
+    const double elapsed = (now() - last_alc_time_).seconds();
     const float coverage_ratio = computeCoverageRatio();
     const double now_sec = now().seconds();
     const float reward_bonus =
@@ -271,9 +293,6 @@ void ALCPlannerNode::onMapData(
     if (to_navigate.has_value()) {
         sendNavGoal(*to_navigate);
     }
-
-    last_map_data_stamp_ = msg->header.stamp;
-    logGraphState();
 }
 
 void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
@@ -281,21 +300,8 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
         return;
     }
 
-    if (const auto words_recognized = extractWordsRecognized(*msg);
-        words_recognized.has_value()) {
-        saliency_eval_.observeWordsRecognized(*words_recognized);
-    }
-    else {
-        RCLCPP_WARN_ONCE(
-            get_logger(),
-            "[ALCPlanner] %s stats_keys did not match any known "
-            "words-recognized key; S_L normalization may be incorrect.",
-            sub_info_->get_topic_name());
-    }
-
-    const auto robot_it = graph_.node_to_ix.find(msg->ref_id);
-    graph_.robot_ix =
-        robot_it != graph_.node_to_ix.end() ? robot_it->second : -1;
+    latest_ref_id_ = msg->ref_id;
+    updateRobotIx();
     if (msg->loop_closure_id > 0) {
         RCLCPP_INFO(get_logger(), "[ALCPlanner] loop closure detected: id=%d",
                     msg->loop_closure_id);
@@ -305,6 +311,11 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
         slam_graph_planner_.state() == PlannerState::ROTATING) {
         alc_rotation_observed_loop_closure_ = true;
     }
+}
+
+void ALCPlannerNode::updateRobotIx() {
+    const auto it = graph_.node_to_ix.find(latest_ref_id_);
+    graph_.robot_ix = it != graph_.node_to_ix.end() ? it->second : -1;
 }
 
 void ALCPlannerNode::onMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
@@ -334,6 +345,15 @@ void ALCPlannerNode::onPlannerEvent(
             jsonStringField(payload, "event").value_or(std::string{});
         if (event.rfind("alc_", 0) == 0) {
             return;
+        }
+        if (event == "goal_sent" || event == "subgoal_sent" ||
+            event == "recovery_tree_started" ||
+            event == "observation_turn_started") {
+            exploration_moving_ = true;
+        }
+        else if (event == "route_completed") {
+            exploration_moving_ = false;
+            maybeTrigger();
         }
         const std::string failure_class =
             jsonStringField(payload, "failure_class").value_or(std::string{});
@@ -377,7 +397,14 @@ void ALCPlannerNode::ingestNodes(const rtabmap_msgs::msg::MapData& msg) {
         Keyframe& keyframe = graph_.keyframes[static_cast<std::size_t>(ix)];
         keyframe.node_id = node_msg.id;
         keyframe.pose = toPose6f(node_msg.pose);
-        keyframe.word_ids = node_msg.word_id_keys;
+        // RTAB-Map gives features outside the dictionary negative ids, which
+        // repeat in every node and say nothing about the place.
+        keyframe.word_ids.clear();
+        std::copy_if(node_msg.word_id_keys.begin(), node_msg.word_id_keys.end(),
+                     std::back_inserter(keyframe.word_ids),
+                     [](const int32_t id) { return id > 0; });
+        saliency_eval_.observeWordsRecognized(
+            static_cast<int>(keyframe.word_ids.size()));
     }
 
     const std::size_t pose_count =
@@ -542,7 +569,12 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
         const bool should_spin =
             self->slam_graph_planner_.onNavigationResult(success);
         if (should_spin) {
-            self->sendSpinGoal();
+            if (self->spin_at_target_) {
+                self->sendSpinGoal();
+                return;
+            }
+            self->slam_graph_planner_.onRotationComplete();
+            self->publishAlcFinished("navigation", true, "target_reached");
             return;
         }
 
@@ -606,7 +638,6 @@ void ALCPlannerNode::cancelNavigationTimeout() {
 void ALCPlannerNode::sendSpinGoal() {
     if (!spin_client_) {
         slam_graph_planner_.onRotationComplete();
-        last_alc_time_ = now();
         publishAlcFinished("rotation", false, "spin_client_unavailable");
         RCLCPP_WARN(get_logger(),
                     "[ALCPlanner] spin action client unavailable");
@@ -614,7 +645,6 @@ void ALCPlannerNode::sendSpinGoal() {
     }
     if (!spin_client_->wait_for_action_server(std::chrono::seconds(0))) {
         slam_graph_planner_.onRotationComplete();
-        last_alc_time_ = now();
         publishAlcFinished("rotation", false, "spin_server_unavailable");
         RCLCPP_WARN(get_logger(),
                     "[ALCPlanner] spin action server unavailable");
@@ -623,6 +653,9 @@ void ALCPlannerNode::sendSpinGoal() {
 
     Spin::Goal goal;
     goal.target_yaw = static_cast<float>(2.0 * M_PI);
+    // Nav2 treats a zero allowance as "never time out".
+    goal.time_allowance =
+        rclcpp::Duration::from_seconds(std::max(0.0, navigation_timeout_sec_));
 
     RCLCPP_INFO(get_logger(), "[ALCPlanner] sending spin goal: yaw=2pi");
     alc_rotation_observed_loop_closure_ = false;
@@ -642,7 +675,6 @@ void ALCPlannerNode::sendSpinGoal() {
 
         self->slam_graph_planner_.onRotationComplete();
         self->alc_rotation_attempt_active_ = false;
-        self->last_alc_time_ = self->now();
         self->publishAlcFinished("rotation", false, "spin_rejected");
         RCLCPP_WARN(self->get_logger(), "[ALCPlanner] spin goal rejected");
     };
@@ -659,7 +691,6 @@ void ALCPlannerNode::sendSpinGoal() {
         self->alc_rotation_attempt_active_ = false;
         self->alc_rotation_observed_loop_closure_ = false;
         self->slam_graph_planner_.onRotationComplete();
-        self->last_alc_time_ = self->now();
         const bool success =
             result.code == rclcpp_action::ResultCode::SUCCEEDED;
         self->publishAlcFinished("rotation", success,
@@ -694,6 +725,7 @@ void ALCPlannerNode::publishAlcStarted(const ALCCandidate& target) {
 void ALCPlannerNode::publishAlcFinished(const std::string& phase,
                                         const bool success,
                                         const std::string& reason) {
+    last_alc_time_ = now();
     if (!event_pub_) {
         return;
     }

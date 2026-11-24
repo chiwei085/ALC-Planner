@@ -69,6 +69,8 @@ struct ALCCandidate
     int tau_ix = -1;
     Pose6f rep_pose;
     std::vector<int> keyframe_ixs;
+    // Camera view overlap on arrival per keyframe; empty = full overlap.
+    std::vector<float> view_overlap;
     float euclidean_dist = 0.0f;
     float graph_dist = 0.0f;
     float graph_dist_var = 0.0f;
@@ -90,6 +92,7 @@ struct ALCCandidate
 
 struct Params
 {
+    float camera_hfov_rad = 1.0f;
     float cv_L = 3.0f;
     float cv_G = 3.0f;
     float cs_lighthouse = 0.6f;
