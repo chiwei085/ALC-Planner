@@ -29,6 +29,7 @@ find_package(ament_cmake REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 3.4 REQUIRED NO_MODULE)
+find_package(action_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -74,6 +75,7 @@ target_compile_features(alc_planner_node_lib PUBLIC cxx_std_17)
 target_link_libraries(alc_planner_node_lib alc_planner_core)
 ament_target_dependencies(
   alc_planner_node_lib
+  action_msgs
   geometry_msgs
   nav2_msgs
   nav_msgs

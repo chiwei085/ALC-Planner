@@ -1,5 +1,6 @@
 #pragma once
 
+#include <action_msgs/msg/goal_status_array.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <nav2_msgs/action/spin.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
@@ -87,6 +88,11 @@ private:
     rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
     rclcpp_action::Client<Spin>::SharedPtr spin_client_;
     rclcpp::TimerBase::SharedPtr nav_timeout_timer_;
+    rclcpp::TimerBase::SharedPtr nav_idle_timer_;
+    rclcpp::Subscription<action_msgs::msg::GoalStatusArray>::SharedPtr
+        nav_status_sub_;
+    bool nav_goals_active_ = false;
+    int nav_idle_ticks_ = 0;
     // Each ALC navigation goal gets an id; callbacks from an older goal (one
     // that timed out or was preempted) are ignored.
     std::uint64_t nav_attempt_ = 0;

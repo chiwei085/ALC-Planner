@@ -27,7 +27,7 @@ protected:
     void SetUp() override {
         rclcpp::NodeOptions options;
         options.parameter_overrides(
-            {rclcpp::Parameter("navigation_timeout_sec", 1.0),
+            {rclcpp::Parameter("navigation_timeout_sec", 1.5),
              rclcpp::Parameter("nav_behavior_tree", "view.xml"),
              rclcpp::Parameter("spin_at_target", false),
              rclcpp::Parameter("planner_event_topic", "/test_alc_nav/events")});
@@ -124,9 +124,10 @@ protected:
         node_->onPlannerEvent(msg);
     }
     void maybeTrigger() { node_->maybeTrigger(); }
-    void sendInfo(const int ref_id) {
+    void sendInfo(const int ref_id, const int loop_closure_id = 0) {
         auto info = std::make_shared<rtabmap_msgs::msg::Info>();
         info->ref_id = ref_id;
+        info->loop_closure_id = loop_closure_id;
         node_->onInfo(info);
     }
     void sendMapData(const int node_id) {
@@ -165,14 +166,15 @@ TEST_F(ALCPlannerNodeNavigationTest,
     EXPECT_TRUE(spinUntil([this] { return cancel_requests_ == 1; }, 1.0));
     EXPECT_EQ(state(), PlannerState::EVALUATING);
 
-    // Attempt B starts before A's result has come back.
+    // Attempt B waits while A is still in Nav2: a goal with another behavior
+    // tree would be rejected there.
     startAttempt();
-    ASSERT_TRUE(spinUntil([this] { return goals_.size() == 2u; }, 2.0));
-    ASSERT_TRUE(spinUntil([this] { return goalHandleHeld(); }, 2.0));
+    spinUntil([] { return false; }, 0.7);
+    EXPECT_EQ(goals_.size(), 1u);
 
     // A's late result must not fail B, disarm B's timeout, or finish again.
     goals_[0]->canceled(std::make_shared<NavigateToPose::Result>());
-    spinUntil([] { return false; }, 0.3);
+    ASSERT_TRUE(spinUntil([this] { return goals_.size() == 2u; }, 2.0));
     EXPECT_EQ(state(), PlannerState::NAVIGATING_TO_ALC);
     EXPECT_TRUE(timeoutArmed());
     EXPECT_EQ(finished_, 1);
@@ -206,6 +208,7 @@ TEST_F(ALCPlannerNodeNavigationTest, TargetWithoutClosureIsNotTriedAgain) {
     ASSERT_TRUE(spinUntil([this] { return goalHandleHeld(); }, 2.0));
     goals_[0]->abort(std::make_shared<NavigateToPose::Result>());
     ASSERT_TRUE(spinUntil([this] { return finished_ == 1; }, 2.0));
+    sendInfo(41, 5);  // a passive closure is no success of this attempt
     maybeTrigger();
     EXPECT_EQ(failedTargets(), 1u);
     ASSERT_TRUE(spinUntil([this] { return goals_.size() == 2u; }, 2.0));

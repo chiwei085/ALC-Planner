@@ -38,6 +38,9 @@ Pose6f toPose6f(const geometry_msgs::msg::Pose& pose_msg) {
     return pose;
 }
 
+// Half a second without a Nav2 goal: an exploration goal sent just before
+// alc_started has been accepted and cancelled by then.
+constexpr int kNavIdleTicks = 5;
 constexpr double kDefaultNavigationTimeoutSec = 120.0;
 constexpr const char* kDefaultPlannerEventTopic = "/planner/events";
 
@@ -74,6 +77,15 @@ ALCPlannerNode::ALCPlannerNode(const rclcpp::NodeOptions& opts)
         declare_parameter<std::string>("map_topic", "/map"),
         rclcpp::SystemDefaultsQoS(),
         std::bind(&ALCPlannerNode::onMap, this, std::placeholders::_1));
+    nav_status_sub_ = create_subscription<action_msgs::msg::GoalStatusArray>(
+        "/navigate_to_pose/_action/status",
+        rclcpp::QoS(1).reliable().transient_local(),
+        [this](const action_msgs::msg::GoalStatusArray& msg) {
+            // 1 accepted, 2 executing, 3 canceling.
+            nav_goals_active_ = std::any_of(
+                msg.status_list.begin(), msg.status_list.end(),
+                [](const auto& s) { return s.status >= 1 && s.status <= 3; });
+        });
     sub_planner_event_ = create_subscription<std_msgs::msg::String>(
         planner_event_topic_, 10,
         std::bind(&ALCPlannerNode::onPlannerEvent, this,
@@ -178,7 +190,7 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
                     msg->loop_closure_id);
     }
 
-    if (attempt_ && msg->loop_closure_id > 0) {
+    if (attempt_ && attempt_->reached && msg->loop_closure_id > 0) {
         attempt_->closure = true;
     }
 }
@@ -418,7 +430,28 @@ void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {
         }
     };
 
-    nav_client_->async_send_goal(goal, options);
+    // Nav2 rejects a preemption that changes the behavior tree, so the
+    // exploration goal that alc_started cancels must be gone first.
+    startNavigationTimeout();
+    nav_idle_ticks_ = 0;
+    nav_idle_timer_ = create_wall_timer(
+        std::chrono::milliseconds(100), [weak_self, attempt, goal, options]() {
+            const auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            if (self->nav_attempt_ != attempt) {
+                self->nav_idle_timer_->cancel();
+                return;
+            }
+            self->nav_idle_ticks_ =
+                self->nav_goals_active_ ? 0 : self->nav_idle_ticks_ + 1;
+            if (self->nav_idle_ticks_ < kNavIdleTicks) {
+                return;
+            }
+            self->nav_idle_timer_->cancel();
+            self->nav_client_->async_send_goal(goal, options);
+        });
 }
 
 void ALCPlannerNode::startNavigationTimeout() {
