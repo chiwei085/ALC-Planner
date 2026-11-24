@@ -53,6 +53,7 @@ private:
     void startNavigationTimeout();
     void cancelNavigationTimeout();
     void publishAlcStarted(const ALCCandidate& target);
+    void publishLoopClosure(const rtabmap_msgs::msg::Info& info);
     void publishAlcFinished(const std::string& phase, bool success,
                             const std::string& reason);
     void pruneDegradationEvents(double now_sec);
@@ -68,6 +69,14 @@ private:
     bool spin_at_target_ = true;
     bool use_approach_heading_ = true;
     int latest_ref_id_ = 0;
+    struct TriggerInputs
+    {
+        double elapsed_sec = 0.0;
+        float coverage_ratio = 0.0f;
+        float reward_bonus = 0.0f;
+        double threshold = 0.0;
+    };
+    TriggerInputs last_trigger_inputs_;
     // Set by exploration events; false when nothing else drives the robot.
     bool exploration_moving_ = false;
     std::string planner_event_topic_;

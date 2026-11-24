@@ -287,6 +287,9 @@ void ALCPlannerNode::maybeTrigger() {
         degradedExplorationActive(now_sec)
             ? static_cast<float>(degraded_exploration_alc_bonus_)
             : 0.0f;
+    last_trigger_inputs_ = {
+        elapsed, coverage_ratio, reward_bonus,
+        TriggerPolicy(params_).threshold(elapsed, coverage_ratio)};
     const auto to_navigate = slam_graph_planner_.onEvaluationComplete(
         best_candidate_, elapsed, coverage_ratio, graph_.robot_ix,
         reward_bonus);
@@ -300,6 +303,7 @@ void ALCPlannerNode::onInfo(const rtabmap_msgs::msg::Info::SharedPtr msg) {
         return;
     }
 
+    publishLoopClosure(*msg);
     latest_ref_id_ = msg->ref_id;
     updateRobotIx();
     if (msg->loop_closure_id > 0) {
@@ -716,6 +720,50 @@ void ALCPlannerNode::publishAlcStarted(const ALCCandidate& target) {
         {"approach_yaw_delta", target.approach_yaw_delta},
         {"pose_uncertainty_lambda", target.pose_uncertainty_lambda},
         {"rotation_risk", target.rotation_risk},
+        {"reward", target.reward},
+        {"reward_bonus", last_trigger_inputs_.reward_bonus},
+        {"threshold", last_trigger_inputs_.threshold},
+        {"elapsed_sec", last_trigger_inputs_.elapsed_sec},
+        {"coverage_ratio", last_trigger_inputs_.coverage_ratio},
+        {"P_lc", target.P_lc},
+        {"delta_U", target.delta_U},
+        {"map_dist", target.map_dist},
+        {"graph_dist", target.graph_dist},
+        {"euclidean_dist", target.euclidean_dist},
+    };
+    std_msgs::msg::String msg;
+    msg.data = payload.dump();
+    event_pub_->publish(msg);
+}
+
+// What each closure actually changed: the correction is RTAB-Map's own
+// measurement, the only direct evidence of what a revisit was worth.
+void ALCPlannerNode::publishLoopClosure(const rtabmap_msgs::msg::Info& info) {
+    if (info.loop_closure_id <= 0 && info.proximity_detection_id <= 0) {
+        return;
+    }
+    const auto stat = [&info](const std::string& key) -> nlohmann::json {
+        const auto count =
+            std::min(info.stats_keys.size(), info.stats_values.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            if (info.stats_keys[i] == key) {
+                return info.stats_values[i];
+            }
+        }
+        return nullptr;
+    };
+    const nlohmann::json payload = {
+        {"event", "loop_closure"},
+        {"time_sec", now().seconds()},
+        {"ref_id", info.ref_id},
+        {"loop_closure_id", info.loop_closure_id},
+        {"proximity_id", info.proximity_detection_id},
+        {"correction_m", stat("Loop/Odom_correction_norm/m")},
+        {"correction_deg", stat("Loop/Odom_correction_angle/deg")},
+        {"map_to_odom_m", stat("Loop/MapToOdom_norm/m")},
+        {"map_to_odom_deg", stat("Loop/MapToOdom_yaw/deg")},
+        {"inliers", stat("Loop/Visual_inliers/")},
+        {"during_alc", slam_graph_planner_.state() != PlannerState::EVALUATING},
     };
     std_msgs::msg::String msg;
     msg.data = payload.dump();
