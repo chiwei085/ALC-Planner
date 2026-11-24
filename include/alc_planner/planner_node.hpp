@@ -43,7 +43,6 @@ private:
     void maybeTrigger();
     void resolveAttempt();
     void publishEvaluation(const RevisitDecision& decision);
-    void checkLighthouse();
     void sendNavGoal(const ALCCandidate& target);
     void sendSpinGoal();
     Params declarePlannerParams();
@@ -80,8 +79,6 @@ private:
     GraphState graph_;
     SaliencyState saliency_state_;
     nav_msgs::msg::OccupancyGrid::SharedPtr occupancy_map_;
-    Pose6f last_lighthouse_pose_;
-    bool has_lighthouse_ = false;
     rclcpp::Time last_map_data_stamp_{0, 0, RCL_ROS_TIME};
 
     using NavigateToPose = nav2_msgs::action::NavigateToPose;

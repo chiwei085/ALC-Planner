@@ -4,16 +4,16 @@ A ROS2 Humble C++ planner that treats **active loop closure as an intrinsic comp
 
 During autonomous exploration, SLAM pose drift accumulates and can distort occupancy maps (e.g., sealing off narrow corridors). This planner continuously evaluates the reward of revisiting previously seen locations to trigger loop closures at the right moment, keeping the pose graph stable throughout exploration rather than only at the end.
 
-## Design basis
+## How it works
 
-The planner synthesizes two papers:
+Between exploration routes the planner computes, from the whole pose graph, how
+uncertain the robot is relative to every old keyframe. It revisits the keyframe
+that removes the most uncertainty per metre driven, weighted by how likely it is
+to be recognised. See [docs/planner.md](docs/planner.md).
 
-- **Ref1 (Yin et al., 2024)** — probabilistic reward framework: travel cost vs. uncertainty-reduction-weighted loop closure probability; distance-based uncertainty surrogate; Branch-and-Bound target selection; adaptive triggering threshold.
-- **Ref2 (Kim & Eustice, 2013)** — perception-driven decision formulation: dual saliency metrics (local texture richness + global scene rarity); DBSCAN-based waypoint clustering; saliency-weighted A*; area coverage term in reward.
-
-What we deliberately do not adopt verbatim: Ref1's cluster P_LC independence assumption (nearby keyframe loop closure events are correlated); Ref2's empirical P_L model (task-specific prior, not transferable to indoor frontier exploration); and Ref2's linear uncertainty–coverage weighting (the exchangeability of these two quantities is not justified).
-
-See [docs/planner.md](docs/planner.md) for the full implementation plan.
+The problem framing follows Yin et al. (active loop closure as part of
+exploration); the recognisability estimate follows the local and global visual
+saliency of Kim & Eustice.
 
 ## Environment
 
@@ -48,6 +48,11 @@ source install/setup.bash
 ```bash
 ros2 launch alc_planner alc_planner.launch.py
 ```
+
+Subscribes to `map_data_topic` (`/rtabmap/mapData`), `info_topic`
+(`/rtabmap/info`) and `map_topic` (`/map`), and sends goals to Nav2's
+`navigate_to_pose`. All parameters and their defaults are in
+[types.hpp](include/alc_planner/types.hpp) and `planner_node.cpp`.
 
 ## References
 

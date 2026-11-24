@@ -7,12 +7,10 @@
 #include <rcutils/logging.h>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <initializer_list>
 #include <iterator>
-#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -105,8 +103,6 @@ Params ALCPlannerNode::declarePlannerParams() {
              {"cv_L", &params.cv_L},
              {"cv_G", &params.cv_G},
              {"cs", &params.cs},
-             {"cs_lighthouse", &params.cs_lighthouse},
-             {"d_min_lighthouse", &params.d_min_lighthouse},
              {"drift_trans_var_per_m", &params.drift_trans_var_per_m},
              {"drift_yaw_var_per_rad", &params.drift_yaw_var_per_rad},
              {"drift_yaw_var_per_m", &params.drift_yaw_var_per_m},
@@ -143,7 +139,6 @@ void ALCPlannerNode::onMapData(
     updateRobotIx();
     ingestLinks(*msg);
     saliency_eval_.update(graph_, saliency_state_);
-    checkLighthouse();
     maybeTrigger();
 
     last_map_data_stamp_ = msg->header.stamp;
@@ -307,38 +302,6 @@ void ALCPlannerNode::ingestLinks(const rtabmap_msgs::msg::MapData& msg) {
     RCLCPP_DEBUG(get_logger(),
                  "[ALCPlanner] ingestLinks: rebuilt %zu directed edges",
                  msg.graph.links.size() * 2U);
-}
-
-void ALCPlannerNode::checkLighthouse() {
-    if (graph_.robot_ix < 0 ||
-        graph_.robot_ix >= static_cast<int>(graph_.keyframes.size())) {
-        return;
-    }
-    if (graph_.robot_ix >= static_cast<int>(saliency_state_.keyframes.size())) {
-        return;
-    }
-
-    Keyframe& current =
-        graph_.keyframes[static_cast<std::size_t>(graph_.robot_ix)];
-    KeyframeSaliency& current_saliency =
-        saliency_state_.keyframes[static_cast<std::size_t>(graph_.robot_ix)];
-    if (current_saliency.saliency_local <= params_.cs_lighthouse) {
-        return;
-    }
-
-    const float dist_from_last =
-        has_lighthouse_
-            ? (current.pose.position - last_lighthouse_pose_.position).norm()
-            : std::numeric_limits<float>::max();
-    if (dist_from_last <= params_.d_min_lighthouse) {
-        return;
-    }
-
-    current_saliency.is_lighthouse = true;
-    last_lighthouse_pose_ = current.pose;
-    has_lighthouse_ = true;
-    RCLCPP_INFO(get_logger(), "[ALCPlanner] lighthouse at node %d (S_L=%.3f)",
-                current.node_id, current_saliency.saliency_local);
 }
 
 void ALCPlannerNode::sendNavGoal(const ALCCandidate& target) {

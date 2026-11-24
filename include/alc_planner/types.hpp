@@ -31,7 +31,6 @@ struct KeyframeSaliency
     float saliency_local = 0.0f;
     float saliency_global = 0.0f;
     float plc_intrinsic = 0.0f;
-    bool is_lighthouse = false;
 };
 
 struct GraphEdge
@@ -78,8 +77,6 @@ struct Params
     float cv_L = 3.0f;
     float cv_G = 3.0f;
     float cs = 0.3f;
-    float cs_lighthouse = 0.6f;
-    float d_min_lighthouse = 5.0f;
 
     // Drift and closure noise of the R2 with RTAB-Map, fitted on 108 closure
     // chains up to 15.6 m. They cannot tell yaw drift per metre from 0 to 1e-3;

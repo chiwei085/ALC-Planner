@@ -26,7 +26,6 @@ if(CCACHE_PROGRAM)
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(PkgConfig REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 3.4 REQUIRED NO_MODULE)
 find_package(action_msgs REQUIRED)
@@ -36,13 +35,7 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rtabmap_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(tf2 REQUIRED)
-find_package(tf2_geometry_msgs REQUIRED)
-find_package(tf2_ros REQUIRED)
-find_package(visualization_msgs REQUIRED)
-pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 
 add_library(alc_planner_core
   src/core/slam_graph_planner.cpp
@@ -82,24 +75,13 @@ ament_target_dependencies(
   rclcpp
   rclcpp_action
   rtabmap_msgs
-  sensor_msgs
   std_msgs
-  tf2
-  tf2_geometry_msgs
-  tf2_ros
-  visualization_msgs
 )
 
 add_executable(alc_planner_node src/node/alc_planner_node_main.cpp)
 target_compile_features(alc_planner_node PUBLIC cxx_std_17)
 target_link_libraries(alc_planner_node alc_planner_node_lib)
 ament_target_dependencies(alc_planner_node rclcpp)
-
-add_executable(db_publisher_node test/db_publisher_node.cpp)
-target_compile_features(db_publisher_node PUBLIC cxx_std_17)
-target_link_libraries(db_publisher_node alc_planner_core ${SQLITE3_LIBRARIES})
-target_include_directories(db_publisher_node PRIVATE ${SQLITE3_INCLUDE_DIRS})
-ament_target_dependencies(db_publisher_node nav_msgs rclcpp rtabmap_msgs)
 
 install(
   TARGETS alc_planner_core
@@ -110,7 +92,7 @@ install(
 )
 
 install(
-  TARGETS alc_planner_node_lib alc_planner_node db_publisher_node
+  TARGETS alc_planner_node_lib alc_planner_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -145,6 +127,14 @@ if(BUILD_TESTING)
     ENV ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1)
   target_link_libraries(test_planner_node_navigation alc_planner_node_lib)
   ament_target_dependencies(test_planner_node_navigation rclcpp rclcpp_action)
+
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(SQLITE3 REQUIRED sqlite3)
+  add_executable(db_publisher_node test/db_publisher_node.cpp)
+  target_compile_features(db_publisher_node PUBLIC cxx_std_17)
+  target_link_libraries(db_publisher_node alc_planner_core ${SQLITE3_LIBRARIES})
+  target_include_directories(db_publisher_node PRIVATE ${SQLITE3_INCLUDE_DIRS})
+  ament_target_dependencies(db_publisher_node nav_msgs rclcpp rtabmap_msgs)
 
   # Humble's GoogleTest relies on a transitive cstdint include absent in newer GCC.
   if(TARGET gtest AND (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
