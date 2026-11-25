@@ -215,8 +215,7 @@ void ALCPlannerNode::onPlannerEvent(
         if (event == "goal_sent" || event == "subgoal_sent") {
             // A route's first goal finds the robot at rest, so a revisit can
             // take its place without stopping anything.
-            if (payload.contains("index") &&
-                static_cast<int>(payload[std::string("index")]) == 0) {
+            if (payload.contains("index") && payload["index"] == 0) {
                 exploration_moving_ = false;
                 maybeTrigger();
             }

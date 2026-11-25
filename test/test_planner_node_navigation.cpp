@@ -137,6 +137,11 @@ protected:
                     "\",\"index\":" + std::to_string(index) + "}";
         node_->onPlannerEvent(msg);
     }
+    void sendRawEvent(const std::string& data) {
+        auto msg = std::make_shared<std_msgs::msg::String>();
+        msg->data = data;
+        node_->onPlannerEvent(msg);
+    }
     void maybeTrigger() { node_->maybeTrigger(); }
     void sendInfo(const int ref_id, const int loop_closure_id = 0) {
         auto info = std::make_shared<rtabmap_msgs::msg::Info>();
@@ -220,6 +225,22 @@ TEST_F(ALCPlannerNodeNavigationTest, FirstGoalOfARouteIsADecisionPoint) {
     sendEvent("goal_sent", 1);  // later waypoint: the robot is driving
     EXPECT_EQ(state(), PlannerState::EVALUATING);
     sendEvent("goal_sent", 0);
+    EXPECT_EQ(state(), PlannerState::NAVIGATING_TO_ALC);
+}
+
+TEST_F(ALCPlannerNodeNavigationTest, EventsMayHoldAnyJson) {
+    ASSERT_TRUE(spinUntil([this] { return serverReady(); }, 5.0));
+    planCandidate();
+    for (const char* data :
+         {"", "not json", "5", "[1]", "null", "{\"event\":5}",
+          "{\"event\":\"goal_sent\",\"index\":\"0\"}", "bad \xff byte"}) {
+        SCOPED_TRACE(data);
+        EXPECT_NO_THROW(sendRawEvent(data));
+        EXPECT_EQ(state(), PlannerState::EVALUATING);
+    }
+    sendRawEvent(
+        "{\"event\":\"goal_sent\",\"index\":0,\"x\":1e-07,"
+        "\"note\":\"\\u4e2d\"}");
     EXPECT_EQ(state(), PlannerState::NAVIGATING_TO_ALC);
 }
 

@@ -32,6 +32,7 @@ find_package(action_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(nlohmann_json REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rtabmap_msgs REQUIRED)
@@ -65,7 +66,10 @@ target_include_directories(alc_planner_node_lib
   $<INSTALL_INTERFACE:include>
 )
 target_compile_features(alc_planner_node_lib PUBLIC cxx_std_17)
-target_link_libraries(alc_planner_node_lib alc_planner_core)
+target_link_libraries(alc_planner_node_lib
+  alc_planner_core
+  nlohmann_json::nlohmann_json
+)
 ament_target_dependencies(
   alc_planner_node_lib
   action_msgs
